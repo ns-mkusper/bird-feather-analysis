@@ -19,7 +19,11 @@ echo "1. Preparing HEAD Node ($HEAD_IP)..."
 ssh -i $KEY -o StrictHostKeyChecking=no $USER@$HEAD_IP "
     $PIP_BIN install -q 'ray[default]' python-dotenv mlx_vlm
     $RAY_BIN stop -f > /dev/null 2>&1 || true
-    cd $REPO_DIR && git fetch origin && git reset --hard origin/main > /dev/null 2>&1
+            if [ ! -d "$REPO_DIR/.git" ]; then
+            echo "      [+] Cloning repository to $ip..."
+            git clone git@github.com:ns-mkusper/birth-feather-thesis.git $REPO_DIR > /dev/null 2>&1
+        fi
+        cd $REPO_DIR && git fetch origin && git reset --hard origin/main > /dev/null 2>&1
 "
 
 # Export HF_TOKEN if available in the repo to copy to workers
@@ -46,6 +50,10 @@ for ip in "${WORKER_IPS[@]}"; do
             pip install -q 'ray[default]' python-dotenv mlx_vlm
         fi
         
+                if [ ! -d "$REPO_DIR/.git" ]; then
+            echo "      [+] Cloning repository to $ip..."
+            git clone git@github.com:ns-mkusper/birth-feather-thesis.git $REPO_DIR > /dev/null 2>&1
+        fi
         cd $REPO_DIR && git fetch origin && git reset --hard origin/main > /dev/null 2>&1
         $RAY_BIN stop -f > /dev/null 2>&1 || true
     " &
