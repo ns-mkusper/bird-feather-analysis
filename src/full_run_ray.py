@@ -22,7 +22,7 @@ logging.basicConfig(
 
 ray.init(address='auto', ignore_reinit_error=True)
 
-@ray.remote(num_cpus=8)
+@ray.remote(num_cpus=10)
 class FeatherProcessor:
     def __init__(self):
         import os
@@ -241,7 +241,7 @@ def run_pipeline(input_dir, output_dir):
     # Mac Minis have ~8 cores each. If we have 4 nodes, we have ~32 CPUs total.
     # We will spin up exactly as many actors as there are CPUs to maximize throughput.
     num_cpus = int(ray.cluster_resources().get('CPU', 4))
-    num_actors = num_cpus // 8
+    num_actors = num_cpus // 10
     print(f'Cluster resources: {num_cpus} CPUs available. Spinning up {num_actors} parallel actors to prevent Out-Of-Memory crashes.')
     
     actors = [FeatherProcessor.remote() for _ in range(num_actors)]
@@ -249,10 +249,13 @@ def run_pipeline(input_dir, output_dir):
     # Distribute the images across all actors in a round-robin fashion
     futures = [actors[i % num_actors].process_image.remote(img, output_dir) for i, img in enumerate(image_paths)]
     
-    results = ray.get(futures)
-    
-    # Filter boolean results vs None/String depending on what process_image returns
-    successes = sum(1 for r in results if r is True)
+    successes = 0
+    for future in futures:
+        try:
+            res = ray.get(future)
+            if res is True: successes += 1
+        except Exception as e:
+            print(f'Actor died, skipping image: {e}')
     print(f'Pipeline complete. Successfully processed {successes}/{len(image_paths)} images.')
 
 if __name__ == '__main__':
