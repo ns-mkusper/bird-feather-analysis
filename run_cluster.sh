@@ -65,36 +65,10 @@ wait # Wait for all worker nodes to finish bootstrapping
 
 echo "3. Starting HEAD Node ($HEAD_IP)..."
 ssh -i $KEY -o StrictHostKeyChecking=no $USER@$HEAD_IP "
-    # Use a tiny Python script to proxy the traffic from localhost to 10.0.0.x (Fixes MacOS aiohttp IPv6 bug)
-    pkill -f "tiny_proxy.py" || true
-    cat << 'PROX' > tiny_proxy.py
-import socket, select, sys, _thread
-
-def forward(source, destination):
-    while True:
-        try:
-            string = source.recv(1024)
-            if string: destination.sendall(string)
-            else: break
-        except Exception: break
-    source.close(); destination.close()
-
-def main(local_port, remote_host, remote_port):
-    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server.bind(('127.0.0.1', local_port))
-    server.listen(10)
-    while True:
-        local_socket, _ = server.accept()
-        remote_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        remote_socket.connect((remote_host, remote_port))
-        _thread.start_new_thread(forward, (local_socket, remote_socket))
-        _thread.start_new_thread(forward, (remote_socket, local_socket))
-
-if __name__ == '__main__':
-    main(int(sys.argv[1]), sys.argv[2], int(sys.argv[3]))
-PROX
-    nohup $PYTHON_BIN tiny_proxy.py 9090 10.0.0.246 9090 > /dev/null 2>&1 &
-    nohup $PYTHON_BIN tiny_proxy.py 3000 10.0.0.246 3000 > /dev/null 2>&1 &
+    # Use Miniforge Socat to proxy the traffic from localhost to 10.0.0.x (Fixes MacOS aiohttp IPv6 bug)
+    pkill -f "socat" || true
+    nohup /Users/openteams/miniforge3/bin/socat TCP-LISTEN:9090,fork,reuseaddr TCP:10.0.0.246:9090 > /dev/null 2>&1 &
+    nohup /Users/openteams/miniforge3/bin/socat TCP-LISTEN:3000,fork,reuseaddr TCP:10.0.0.246:3000 > /dev/null 2>&1 &
     sleep 2
     RAY_PROMETHEUS_HOST="http://127.0.0.1:9090" RAY_GRAFANA_HOST="http://127.0.0.1:3000" RAY_ENABLE_WINDOWS_OR_OSX_CLUSTER=1 $RAY_BIN start --head --node-ip-address=$HEAD_IP --port=6379 --dashboard-host=0.0.0.0 --metrics-export-port=8080 > /dev/null 2>&1
 "
