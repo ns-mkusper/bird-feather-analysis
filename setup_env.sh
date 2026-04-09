@@ -46,7 +46,7 @@ Rscript -e "install.packages(c('pavo', 'jpeg'), repos='https://cloud.r-project.o
 echo "[4/4] Installing Python ML dependencies..."
 pip install --upgrade pip
 pip install torch torchvision
-pip install ultralytics pandas open_clip_torch einops kornia timm mlx_vlm grad-cam ray jupyterlab ipykernel  onnxruntime jupyter-resource-usage opencv-python matplotlib
+pip install ultralytics pandas open_clip_torch einops kornia timm mlx_vlm grad-cam ray jupyterlab ipykernel ipywidgets  onnxruntime jupyter-resource-usage opencv-python matplotlib python-dotenv
 
 # Force rpy2 to build against the newly installed Native R
 pip install --force-reinstall --no-cache-dir rpy2

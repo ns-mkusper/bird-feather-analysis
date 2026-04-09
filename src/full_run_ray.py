@@ -82,7 +82,28 @@ class FeatherProcessor:
                 outputs, inputs.input_ids, target_sizes=[img_pil.size[::-1]]
             )[0]
             
-            boxes = [b.tolist() for s, b in zip(results['scores'], results['boxes']) if s > 0.45]
+            boxes = []
+            img_area = img_pil.size[0] * img_pil.size[1]
+            for score, box in zip(results['scores'], results['boxes']):
+                if score > 0.25:
+                    b = box.tolist()
+                    w = b[2] - b[0]
+                    h = b[3] - b[1]
+                    if (w * h) > (img_area * 0.45): continue
+                    
+                    shrink = 0.02
+                    b[0] += w * shrink
+                    b[1] += h * shrink
+                    b[2] -= w * shrink
+                    b[3] -= h * shrink
+                    boxes.append(b + [score.item()])
+                    
+            if boxes:
+                import torchvision
+                boxes_tensor = torch.tensor([b[:4] for b in boxes], dtype=torch.float32)
+                scores_tensor = torch.tensor([b[4] for b in boxes], dtype=torch.float32)
+                keep_indices = torchvision.ops.nms(boxes_tensor, scores_tensor, iou_threshold=0.3)
+                boxes = [boxes[i][:4] for i in keep_indices.tolist()]
             
             del dino_model
             torch.mps.empty_cache()
