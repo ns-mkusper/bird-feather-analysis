@@ -194,6 +194,15 @@ class FeatherProcessor:
                 out_path = os.path.join(output_dir, filename)
                 cv2.imwrite(out_path, crop_eq)
                 
+            # --- MEMORY CLEANUP TO PREVENT OOM ---
+            import gc
+            gc.collect()
+            torch.mps.empty_cache()
+            try:
+                import mlx.core as mx
+                mx.metal.clear_cache()
+            except:
+                pass
             return True
                     
             boxes = result.boxes.xyxy.cpu().numpy()
@@ -221,6 +230,15 @@ class FeatherProcessor:
                 out_path = os.path.join(output_dir, filename)
                 cv2.imwrite(out_path, crop_eq)
                 
+            # --- MEMORY CLEANUP TO PREVENT OOM ---
+            import gc
+            gc.collect()
+            torch.mps.empty_cache()
+            try:
+                import mlx.core as mx
+                mx.metal.clear_cache()
+            except:
+                pass
             return True
             
         except Exception as e:
