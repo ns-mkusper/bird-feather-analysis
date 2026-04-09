@@ -25,6 +25,9 @@ ray.init(address='auto', ignore_reinit_error=True)
 @ray.remote(num_cpus=1)
 class FeatherProcessor:
     def __init__(self):
+        import os
+        from dotenv import load_dotenv
+        load_dotenv("/Users/openteams/Feather_Molt_Project/.env")
         import torch
         logging.info(f'Initializing Worker {os.getpid()} on compute cluster...')
         self.device = torch.device('mps' if torch.backends.mps.is_available() else 'cpu')
