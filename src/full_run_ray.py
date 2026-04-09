@@ -1,5 +1,8 @@
 import ray
 import os
+from dotenv import load_dotenv
+load_dotenv()
+
 import cv2
 import logging
 import numpy as np
