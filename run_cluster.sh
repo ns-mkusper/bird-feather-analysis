@@ -20,7 +20,7 @@ ssh -i $KEY -o StrictHostKeyChecking=no $USER@$HEAD_IP "
     $PIP_BIN install -q 'ray[default]' python-dotenv mlx_vlm
     $RAY_BIN stop -f > /dev/null 2>&1 || true
             if [ ! -d "$REPO_DIR/.git" ]; then
-            echo "      [+] Cloning repository to $ip..."
+            echo "      Cloning repository to $ip..."
             git clone git@github.com:ns-mkusper/birth-feather-thesis.git $REPO_DIR > /dev/null 2>&1
         fi
         cd $REPO_DIR && git fetch origin && git reset --hard origin/main > /dev/null 2>&1
@@ -51,7 +51,7 @@ for ip in "${WORKER_IPS[@]}"; do
         fi
         
                 if [ ! -d "$REPO_DIR/.git" ]; then
-            echo "      [+] Cloning repository to $ip..."
+            echo "      Cloning repository to $ip..."
             git clone git@github.com:ns-mkusper/birth-feather-thesis.git $REPO_DIR > /dev/null 2>&1
         fi
         cd $REPO_DIR && git fetch origin && git reset --hard origin/main > /dev/null 2>&1
