@@ -17,7 +17,7 @@ RAY_BIN="/Users/openteams/miniforge3/envs/feather_env/bin/ray"
 # Stop existing processes on HEAD and prepare
 echo "1. Preparing HEAD Node ($HEAD_IP)..."
 ssh -i $KEY -o StrictHostKeyChecking=no $USER@$HEAD_IP "
-    $PIP_BIN install -q 'ray[default]' python-dotenv mlx_vlm
+    $PIP_BIN install -q 'ray[default]==2.54.1' python-dotenv mlx_vlm
     $RAY_BIN stop -f > /dev/null 2>&1 || true
             if [ ! -d "$REPO_DIR/.git" ]; then
             echo "      Cloning repository to $ip..."
@@ -44,10 +44,10 @@ for ip in "${WORKER_IPS[@]}"; do
             echo \"      [+] Creating feather_env and installing dependencies on \$ip (this may take 5+ minutes)...\"
             conda create -y -n feather_env -c conda-forge python=3.10 > /dev/null 2>&1
             conda activate feather_env
-            pip install -q torch torchvision ultralytics pandas open_clip_torch einops kornia timm mlx_vlm grad-cam 'ray[default]' opencv-python python-dotenv
+            pip install -q torch torchvision ultralytics pandas open_clip_torch einops kornia timm mlx_vlm grad-cam 'ray[default]==2.54.1' opencv-python python-dotenv
         else
             conda activate feather_env
-            pip install -q 'ray[default]' python-dotenv mlx_vlm
+            pip install -q 'ray[default]==2.54.1' python-dotenv mlx_vlm
         fi
         
                 if [ ! -d "$REPO_DIR/.git" ]; then
