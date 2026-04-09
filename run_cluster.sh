@@ -36,6 +36,7 @@ for ip in "${WORKER_IPS[@]}"; do
         
         source /Users/openteams/miniforge3/etc/profile.d/conda.sh
         if ! conda env list | grep -q \"feather_env\"; then
+            conda remove -y --name feather_env --all > /dev/null 2>&1 || true
             echo \"      [+] Creating feather_env and installing dependencies on \$ip (this may take 5+ minutes)...\"
             conda create -y -n feather_env -c conda-forge python=3.10 > /dev/null 2>&1
             conda activate feather_env
