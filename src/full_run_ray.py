@@ -20,9 +20,9 @@ logging.basicConfig(
     format='%(asctime)s [%(levelname)s] %(message)s'
 )
 
-ray.init(ignore_reinit_error=True)
+ray.init(address='auto', ignore_reinit_error=True)
 
-@ray.remote(num_cpus=2)
+@ray.remote(num_cpus=1)
 class FeatherProcessor:
     def __init__(self):
         import torch
@@ -226,17 +226,29 @@ class FeatherProcessor:
             traceback.print_exc()
             return False
 
-def run_pipeline(input_dir, output_dir, num_actors=2):
+def run_pipeline(input_dir, output_dir):
     os.makedirs(output_dir, exist_ok=True)
-    # Just run 2 images for a rapid integration test!
-    image_paths = [os.path.join(input_dir, 'A1383 1999-im1315.jpg'), os.path.join(input_dir, 'A1383 2000-im1316.jpg')]
+    
+    # Process the entire dataset!
+    image_paths = glob(os.path.join(input_dir, '*.[jJ][pP][gG]'))
     
     print(f'Starting Ray distribution across {len(image_paths)} images...')
-    actors = [FeatherProcessor.remote() for _ in range(num_actors)]
-    futures = [actors[i % num_actors].process_image.remote(img, output_dir) for i, img in enumerate(image_paths)]
+    
+    # Query cluster resources to dynamically determine how many actors we can spawn
+    # Mac Minis have ~8 cores each. If we have 4 nodes, we have ~32 CPUs total.
+    # We will spin up exactly as many actors as there are CPUs to maximize throughput.
+    num_cpus = int(ray.cluster_resources().get('CPU', 4))
+    print(f'Cluster resources: {num_cpus} CPUs available. Spinning up {num_cpus} parallel actors.')
+    
+    actors = [FeatherProcessor.remote() for _ in range(num_cpus)]
+    
+    # Distribute the images across all actors in a round-robin fashion
+    futures = [actors[i % num_cpus].process_image.remote(img, output_dir) for i, img in enumerate(image_paths)]
     
     results = ray.get(futures)
-    successes = sum(results)
+    
+    # Filter boolean results vs None/String depending on what process_image returns
+    successes = sum(1 for r in results if r is True)
     print(f'Pipeline complete. Successfully processed {successes}/{len(image_paths)} images.')
 
 if __name__ == '__main__':
