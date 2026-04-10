@@ -121,7 +121,7 @@ ssh -i $KEY -o StrictHostKeyChecking=no $USER@$HEAD_IP "
   export PYTHONPATH='$REPO_DIR'
   export BROKER_URL='$BROKER_URL'
   export RESULT_BACKEND='$RESULT_BACKEND'
-  nohup $PYTHON_BIN -m celery -A src.celery_app worker --pool=threads --without-mingle --loglevel=INFO --concurrency=$WORKER_CONCURRENCY --hostname=head@%h > celery_worker.log 2>&1 < /dev/null & disown
+  nohup script -q /tmp/celery_head_pty.log $PYTHON_BIN -m celery -A src.celery_app worker --pool=threads --without-mingle --loglevel=INFO --concurrency=$WORKER_CONCURRENCY --hostname=head@%h > celery_worker.log 2>&1 < /dev/null & disown
 "
 
 for ip in "${WORKER_IPS[@]}"; do
@@ -130,7 +130,7 @@ for ip in "${WORKER_IPS[@]}"; do
     export PYTHONPATH='$REPO_DIR'
     export BROKER_URL='$BROKER_URL'
     export RESULT_BACKEND='$RESULT_BACKEND'
-    nohup $PYTHON_BIN -m celery -A src.celery_app worker --pool=threads --without-mingle --loglevel=INFO --concurrency=$WORKER_CONCURRENCY --hostname=worker@%h > celery_worker.log 2>&1 < /dev/null & disown
+    nohup script -q /tmp/celery_worker_pty.log $PYTHON_BIN -m celery -A src.celery_app worker --pool=threads --without-mingle --loglevel=INFO --concurrency=$WORKER_CONCURRENCY --hostname=worker@%h > celery_worker.log 2>&1 < /dev/null & disown
   " &
 done
 wait
