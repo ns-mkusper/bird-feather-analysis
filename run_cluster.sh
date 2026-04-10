@@ -26,9 +26,27 @@ echo "1. Preparing HEAD node ($HEAD_IP)..."
 ssh -i $KEY -o StrictHostKeyChecking=no $USER@$HEAD_IP "
   source /Users/openteams/miniforge3/etc/profile.d/conda.sh
   conda activate feather_env >/dev/null 2>&1 || true
-  conda install -y -n feather_env -c conda-forge redis >/dev/null 2>&1 || true
   $PIP_BIN install -q --upgrade pip
   $PIP_BIN install -q torch torchvision ultralytics pandas open_clip_torch einops kornia timm mlx_vlm grad-cam opencv-python python-dotenv 'celery[redis]' flower redis
+
+  REDIS_BIN=\"\"
+  if [ -x /opt/homebrew/bin/redis-server ]; then
+    REDIS_BIN=/opt/homebrew/bin/redis-server
+  elif [ -x /usr/local/bin/redis-server ]; then
+    REDIS_BIN=/usr/local/bin/redis-server
+  elif command -v redis-server >/dev/null 2>&1; then
+    REDIS_BIN=\$(command -v redis-server)
+  else
+    conda install -y -n feather_env -c conda-forge redis >/dev/null 2>&1 || true
+    if [ -x /Users/openteams/miniforge3/envs/feather_env/bin/redis-server ]; then
+      REDIS_BIN=/Users/openteams/miniforge3/envs/feather_env/bin/redis-server
+    fi
+  fi
+  if [ -z \"\$REDIS_BIN\" ]; then
+    echo 'redis-server not found on head node after install attempts'
+    exit 1
+  fi
+  echo \"\$REDIS_BIN\" > /tmp/feather_redis_bin_path
 
   if [ ! -d '$REPO_DIR/.git' ]; then
     git clone git@github.com:ns-mkusper/birth-feather-thesis.git '$REPO_DIR' >/dev/null 2>&1
@@ -76,6 +94,7 @@ wait
 
 echo "3. Starting Redis on HEAD..."
 ssh -i $KEY -o StrictHostKeyChecking=no $USER@$HEAD_IP "
+  REDIS_BIN=\$(cat /tmp/feather_redis_bin_path)
   cat > /tmp/feather_redis.conf <<'CONF'
 port 6379
 bind 0.0.0.0
@@ -84,7 +103,7 @@ dbfilename feather_dump.rdb
 dir /tmp
 appendonly no
 CONF
-  nohup /Users/openteams/miniforge3/envs/feather_env/bin/redis-server /tmp/feather_redis.conf >/tmp/feather_redis.log 2>&1 &
+  nohup \$REDIS_BIN /tmp/feather_redis.conf >/tmp/feather_redis.log 2>&1 &
 "
 
 sleep 2
@@ -115,6 +134,7 @@ ssh -i $KEY -o StrictHostKeyChecking=no $USER@$HEAD_IP "
   export PYTHONPATH='$REPO_DIR'
   export BROKER_URL='$BROKER_URL'
   export RESULT_BACKEND='$RESULT_BACKEND'
+  export FLOWER_UNAUTHENTICATED_API=true
   nohup $PYTHON_BIN -m celery -A src.celery_app flower --address=0.0.0.0 --port=5555 > flower.log 2>&1 &
 "
 
