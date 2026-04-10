@@ -21,7 +21,7 @@ conda activate feather_env
 
 echo "[3/3] Installing Python dependencies..."
 pip install --upgrade pip
-pip install torch torchvision ultralytics pandas open_clip_torch einops kornia timm mlx_vlm grad-cam jupyterlab ipykernel ipywidgets onnxruntime jupyter-resource-usage opencv-python matplotlib python-dotenv celery[redis] flower redis
+pip install torch torchvision ultralytics pandas open_clip_torch einops kornia timm mlx_vlm grad-cam jupyterlab ipykernel ipywidgets onnxruntime jupyter-resource-usage opencv-python matplotlib python-dotenv 'celery[redis]' flower redis
 
 python -m ipykernel install --user --name feather_env --display-name "Feather Env"
 

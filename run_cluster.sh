@@ -28,7 +28,7 @@ ssh -i $KEY -o StrictHostKeyChecking=no $USER@$HEAD_IP "
   conda activate feather_env >/dev/null 2>&1 || true
   conda install -y -n feather_env -c conda-forge redis >/dev/null 2>&1 || true
   $PIP_BIN install -q --upgrade pip
-  $PIP_BIN install -q torch torchvision ultralytics pandas open_clip_torch einops kornia timm mlx_vlm grad-cam opencv-python python-dotenv celery[redis] flower redis
+  $PIP_BIN install -q torch torchvision ultralytics pandas open_clip_torch einops kornia timm mlx_vlm grad-cam opencv-python python-dotenv 'celery[redis]' flower redis
 
   if [ ! -d '$REPO_DIR/.git' ]; then
     git clone git@github.com:ns-mkusper/birth-feather-thesis.git '$REPO_DIR' >/dev/null 2>&1
@@ -60,7 +60,7 @@ for ip in "${WORKER_IPS[@]}"; do
     conda activate feather_env
 
     /Users/openteams/miniforge3/envs/feather_env/bin/pip install -q --upgrade pip
-    /Users/openteams/miniforge3/envs/feather_env/bin/pip install -q torch torchvision ultralytics pandas open_clip_torch einops kornia timm mlx_vlm grad-cam opencv-python python-dotenv celery[redis] flower redis
+    /Users/openteams/miniforge3/envs/feather_env/bin/pip install -q torch torchvision ultralytics pandas open_clip_torch einops kornia timm mlx_vlm grad-cam opencv-python python-dotenv 'celery[redis]' flower redis
 
     if [ ! -d '$REPO_DIR/.git' ]; then
       git clone git@github.com:ns-mkusper/birth-feather-thesis.git '$REPO_DIR' >/dev/null 2>&1
@@ -84,7 +84,7 @@ dbfilename feather_dump.rdb
 dir /tmp
 appendonly no
 CONF
-  nohup redis-server /tmp/feather_redis.conf >/tmp/feather_redis.log 2>&1 &
+  nohup /Users/openteams/miniforge3/envs/feather_env/bin/redis-server /tmp/feather_redis.conf >/tmp/feather_redis.log 2>&1 &
 "
 
 sleep 2
