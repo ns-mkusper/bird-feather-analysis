@@ -3,6 +3,7 @@ set -e
 
 PLEX_HOST="10.0.0.246"
 GRAFANA_URL="http://$PLEX_HOST:3000"
+# Export GRAFANA_CREDS in your shell, e.g. "admin:your_password".
 CREDS="${GRAFANA_CREDS:?GRAFANA_CREDS is required (format: user:pass)}"
 
 DS_UID=$(ssh -p 2204 -o StrictHostKeyChecking=no mkusper@$PLEX_HOST "curl -s -u $CREDS $GRAFANA_URL/api/datasources/name/Prometheus | grep -o '\"uid\":\"[^\"]*' | cut -d'\"' -f4")
