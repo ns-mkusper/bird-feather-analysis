@@ -16,6 +16,5 @@ celery_app.conf.update(
     worker_prefetch_multiplier=1,
     task_acks_late=True,
     task_track_started=True,
+    include=["src.celery_tasks"],
 )
-
-celery_app.autodiscover_tasks(["src"])
