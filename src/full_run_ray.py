@@ -195,12 +195,18 @@ class FeatherProcessor:
                 cv2.imwrite(out_path, crop_eq)
                 
             # --- MEMORY CLEANUP TO PREVENT OOM ---
+            try:
+                del img_pil, inputs, outputs, sam_res, overlay, blended, output, chatml
+            except:
+                pass
+                
             import gc
             gc.collect()
+            import torch
             torch.mps.empty_cache()
             try:
                 import mlx.core as mx
-                mx.metal.clear_cache()
+                mx.clear_cache()
             except:
                 pass
             return True
@@ -231,12 +237,18 @@ class FeatherProcessor:
                 cv2.imwrite(out_path, crop_eq)
                 
             # --- MEMORY CLEANUP TO PREVENT OOM ---
+            try:
+                del img_pil, inputs, outputs, sam_res, overlay, blended, output, chatml
+            except:
+                pass
+                
             import gc
             gc.collect()
+            import torch
             torch.mps.empty_cache()
             try:
                 import mlx.core as mx
-                mx.metal.clear_cache()
+                mx.clear_cache()
             except:
                 pass
             return True
