@@ -76,7 +76,7 @@ ssh -i $KEY -o StrictHostKeyChecking=no $USER@$HEAD_IP "
 }
 METRICS
 
-    RAY_PROMETHEUS_HOST="http://10.0.0.246:9090" RAY_GRAFANA_HOST="http://10.0.0.246:3000" RAY_ENABLE_WINDOWS_OR_OSX_CLUSTER=1 $RAY_BIN start --head --node-ip-address=$HEAD_IP --port=6379 --dashboard-host=0.0.0.0 --metrics-export-port=8080 > /dev/null 2>&1
+    RAY_PROMETHEUS_HOST="http://10.0.0.246:9090" RAY_GRAFANA_HOST="http://10.0.0.246:3000" RAY_ENABLE_WINDOWS_OR_OSX_CLUSTER=1 $RAY_BIN start --head --node-ip-address=$HEAD_IP --port=6379 --dashboard-host=0.0.0.0 --metrics-export-port=8080 --num-cpus=14 > /dev/null 2>&1
 "
 echo "   ✅ Head Node active! Dashboard available at http://$HEAD_IP:8265"
 
@@ -84,7 +84,7 @@ echo "4. Joining WORKER Nodes to the cluster..."
 for ip in "${WORKER_IPS[@]}"; do
     echo "   -> Joining Worker: $ip"
     ssh -i $KEY -o StrictHostKeyChecking=no $USER@$ip "
-        RAY_ENABLE_WINDOWS_OR_OSX_CLUSTER=1 $RAY_BIN start --address=$HEAD_IP:6379 --metrics-export-port=8080 > /dev/null 2>&1
+        RAY_ENABLE_WINDOWS_OR_OSX_CLUSTER=1 $RAY_BIN start --address=$HEAD_IP:6379 --metrics-export-port=8080 --num-cpus=14 > /dev/null 2>&1
     " &
 done
 wait
