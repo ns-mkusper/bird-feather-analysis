@@ -1,7 +1,12 @@
+from __future__ import annotations
+
 import os
+from typing import TYPE_CHECKING
 
 from src.celery_app import celery_app
-from src.feather_processing import FeatherProcessor
+
+if TYPE_CHECKING:
+    from src.feather_processing import FeatherProcessor
 
 
 _PROCESSOR: FeatherProcessor | None = None
@@ -10,6 +15,10 @@ _PROCESSOR: FeatherProcessor | None = None
 def _get_processor() -> FeatherProcessor:
     global _PROCESSOR
     if _PROCESSOR is None:
+        # Import lazily so producer-only environments (for example Nebari notebooks)
+        # can dispatch tasks without installing worker-only model dependencies.
+        from src.feather_processing import FeatherProcessor
+
         _PROCESSOR = FeatherProcessor()
     return _PROCESSOR
 
