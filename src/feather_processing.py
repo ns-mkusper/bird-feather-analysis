@@ -177,6 +177,50 @@ class FeatherProcessor:
         except Exception:  # noqa: BLE001
             pass
 
+    def _enhance_for_dark_detection(self, img_pil: Image.Image) -> Image.Image:
+        # Improve low-contrast dark feather visibility before DINO text grounding.
+        bgr = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
+        lab = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB)
+        l, a, b = cv2.split(lab)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        l_eq = clahe.apply(l)
+        enhanced = cv2.cvtColor(cv2.merge((l_eq, a, b)), cv2.COLOR_LAB2RGB)
+        return Image.fromarray(enhanced)
+
+    def _collect_boxes_with_scores(
+        self,
+        img_pil: Image.Image,
+        prompt_text: str,
+        score_thresh: float,
+        max_box_area_ratio: float,
+        shrink: float,
+    ) -> list[list[float]]:
+        inputs = self.dino_processor(images=img_pil, text=prompt_text, return_tensors="pt").to(self.device)
+        with torch.no_grad():
+            outputs = self.dino_model(**inputs)
+        results = self.dino_processor.post_process_grounded_object_detection(
+            outputs,
+            inputs.input_ids,
+            target_sizes=[img_pil.size[::-1]],
+        )[0]
+
+        img_area = img_pil.size[0] * img_pil.size[1]
+        boxes_with_scores: list[list[float]] = []
+        for score, box in zip(results["scores"], results["boxes"]):
+            if float(score) <= score_thresh:
+                continue
+            b = box.tolist()
+            width = b[2] - b[0]
+            height = b[3] - b[1]
+            if (width * height) > (img_area * max_box_area_ratio):
+                continue
+            b[0] += width * shrink
+            b[1] += height * shrink
+            b[2] -= width * shrink
+            b[3] -= height * shrink
+            boxes_with_scores.append([b[0], b[1], b[2], b[3], float(score)])
+        return boxes_with_scores
+
     def process_image(self, image_path: str, output_dir: str, profile: str = "default") -> ProcessResult:
         bird_id, date = self._infer_metadata(image_path)
         metadata_source = "filename"
@@ -191,42 +235,43 @@ class FeatherProcessor:
 
         try:
             img_pil = Image.open(image_path).convert("RGB")
-            inputs = self.dino_processor(images=img_pil, text="bird feather.", return_tensors="pt").to(self.device)
-
-            with torch.no_grad():
-                outputs = self.dino_model(**inputs)
-
-            results = self.dino_processor.post_process_grounded_object_detection(
-                outputs,
-                inputs.input_ids,
-                target_sizes=[img_pil.size[::-1]],
-            )[0]
-
-            boxes_with_scores: list[list[float]] = []
-            img_area = img_pil.size[0] * img_pil.size[1]
             score_thresh = 0.25
             nms_iou = 0.3
             max_box_area_ratio = 0.45
             shrink = 0.02
+            prompts = ["bird feather."]
             if profile == "strict_retry":
-                score_thresh = 0.35
+                # In retry mode, broaden detector recall for hard/dark feathers.
+                score_thresh = 0.2
                 nms_iou = 0.2
-                max_box_area_ratio = 0.35
-                shrink = 0.04
+                max_box_area_ratio = 0.45
+                shrink = 0.02
+                prompts.extend(["dark bird feather.", "black feather."])
 
-            for score, box in zip(results["scores"], results["boxes"]):
-                if float(score) <= score_thresh:
-                    continue
-                b = box.tolist()
-                width = b[2] - b[0]
-                height = b[3] - b[1]
-                if (width * height) > (img_area * max_box_area_ratio):
-                    continue
-                b[0] += width * shrink
-                b[1] += height * shrink
-                b[2] -= width * shrink
-                b[3] -= height * shrink
-                boxes_with_scores.append([b[0], b[1], b[2], b[3], float(score)])
+            boxes_with_scores: list[list[float]] = []
+            for p in prompts:
+                boxes_with_scores.extend(
+                    self._collect_boxes_with_scores(
+                        img_pil=img_pil,
+                        prompt_text=p,
+                        score_thresh=score_thresh,
+                        max_box_area_ratio=max_box_area_ratio,
+                        shrink=shrink,
+                    )
+                )
+
+            # Additional pass over contrast-enhanced image improves dark-feather recall.
+            enhanced_img_pil = self._enhance_for_dark_detection(img_pil)
+            for p in prompts:
+                boxes_with_scores.extend(
+                    self._collect_boxes_with_scores(
+                        img_pil=enhanced_img_pil,
+                        prompt_text=p,
+                        score_thresh=score_thresh,
+                        max_box_area_ratio=max_box_area_ratio,
+                        shrink=shrink,
+                    )
+                )
 
             if not boxes_with_scores:
                 return ProcessResult(
