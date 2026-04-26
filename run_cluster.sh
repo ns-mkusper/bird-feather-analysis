@@ -25,6 +25,10 @@ BROKER_URL="redis://$HEAD_IP:6379/0"
 RESULT_BACKEND="redis://$HEAD_IP:6379/1"
 WORKER_CONCURRENCY="${WORKER_CONCURRENCY:-1}"
 SYNC_RAW_DATA="${SYNC_RAW_DATA:-1}"
+ENABLE_VLM="${ENABLE_VLM:-1}"
+ENABLE_VLM_SCORING="${ENABLE_VLM_SCORING:-1}"
+ENABLE_VLM_METADATA="${ENABLE_VLM_METADATA:-1}"
+VLM_MODEL="${VLM_MODEL:-mlx-community/Qwen3-VL-8B-Instruct-4bit}"
 
 sync_env_file() {
   local ip="$1"
@@ -147,6 +151,10 @@ ssh $SSH_OPTS $USER@$HEAD_IP "
   export PYTHONPATH='$REPO_DIR'
   export BROKER_URL='$BROKER_URL'
   export RESULT_BACKEND='$RESULT_BACKEND'
+  export FEATHER_ENABLE_VLM='$ENABLE_VLM'
+  export FEATHER_ENABLE_VLM_SCORING='$ENABLE_VLM_SCORING'
+  export FEATHER_ENABLE_VLM_METADATA='$ENABLE_VLM_METADATA'
+  export FEATHER_VLM_MODEL='$VLM_MODEL'
   nohup script -q /tmp/celery_head_pty.log $PYTHON_BIN -m celery -A src.celery_app worker --pool=threads --without-mingle --loglevel=INFO --concurrency=$WORKER_CONCURRENCY --hostname=head@%h > celery_worker.log 2>&1 < /dev/null & disown
 "
 
@@ -156,6 +164,10 @@ for ip in "${WORKER_IPS[@]}"; do
     export PYTHONPATH='$REPO_DIR'
     export BROKER_URL='$BROKER_URL'
     export RESULT_BACKEND='$RESULT_BACKEND'
+    export FEATHER_ENABLE_VLM='$ENABLE_VLM'
+    export FEATHER_ENABLE_VLM_SCORING='$ENABLE_VLM_SCORING'
+    export FEATHER_ENABLE_VLM_METADATA='$ENABLE_VLM_METADATA'
+    export FEATHER_VLM_MODEL='$VLM_MODEL'
     nohup script -q /tmp/celery_worker_pty.log $PYTHON_BIN -m celery -A src.celery_app worker --pool=threads --without-mingle --loglevel=INFO --concurrency=$WORKER_CONCURRENCY --hostname=worker@%h > celery_worker.log 2>&1 < /dev/null & disown
   " &
 done
@@ -177,6 +189,10 @@ ssh $SSH_OPTS $USER@$HEAD_IP "
   export PYTHONPATH='$REPO_DIR'
   export BROKER_URL='$BROKER_URL'
   export RESULT_BACKEND='$RESULT_BACKEND'
+  export FEATHER_ENABLE_VLM='$ENABLE_VLM'
+  export FEATHER_ENABLE_VLM_SCORING='$ENABLE_VLM_SCORING'
+  export FEATHER_ENABLE_VLM_METADATA='$ENABLE_VLM_METADATA'
+  export FEATHER_VLM_MODEL='$VLM_MODEL'
   nohup $PYTHON_BIN src/full_run_distributed.py > distributed_pipeline.log 2>&1 &
 "
 
