@@ -5,21 +5,24 @@ A distributed feather segmentation pipeline for a scalable cluster of Celery wor
 ## Workflow Architecture
 ```mermaid
 flowchart LR
-    A[Raw Image Ingest<br/>data/raw] --> B[Task Orchestration<br/>Celery + Redis]
-    B --> C[Grounding DINO<br/>Zero-Shot Box Proposals]
-    C --> D[SAM 2.x<br/>Pixel-Level Segmentation]
-    D --> E[Crop + Normalize + Save<br/>data/runs/<run_id>/processed]
-    D --> F[Bounding Box Preview<br/>_BoundingBoxes.jpg]
-    F --> G[Qwen3-VL QA<br/>score + flags + notes]
-    G --> H[Run Metrics DB<br/>run_stats.sqlite3]
-    H --> I[Monitoring Notebooks<br/>DB-backed dashboards]
+    A[Ingest Raw Images] --> B[Distribute Work Across Cluster<br/>Celery + Redis]
+    B --> C[Detect Feather Regions<br/>Grounding DINO]
+    C --> D[Generate Pixel Masks<br/>SAM 2.x]
+    D --> E[Extract and Normalize Feather Crops]
+    D --> F[Render QA Overlays<br/>boxes + masks]
+    F --> G[Run Vision-Language QA<br/>score + flags + notes]
+    G --> H[Collect Metrics in SQLite DB]
+    H --> I[Live Monitoring and Review]
 ```
 
-- Zero-shot object grounding: `Grounding DINO` uses text prompts (for example, `"bird feather."`) to propose feather boxes without task-specific training.
-- Prompted segmentation: `SAM 2.x` refines detection boxes into pixel-level masks for feather cutouts.
-- Vision-language quality checks: `Qwen3-VL` can score outputs and emit QA flags/notes (coverage, leakage, grouped boxes) into run metrics.
-- Metadata extraction fallback: filename parsing is primary; VLM fallback can recover `bird_id` / date when filename metadata is incomplete.
-- Distributed orchestration: Celery + Redis coordinates parallel per-image processing across a scalable cluster.
+1. Ingest slide images and dispatch each image as an independent task to a scalable worker cluster.
+2. Use zero-shot grounding (`Grounding DINO`) with text prompts to propose feather bounding regions without supervised retraining.
+3. Use prompted segmentation (`SAM 2.x`) to convert proposed regions into pixel-level feather masks.
+4. Post-process masks into clean feather crops, apply basic normalization, and persist run outputs.
+5. Generate visual QA overlays and run vision-language assessment (`Qwen3-VL`) to score quality and detect failure modes such as grouped boxes, leakage, or incomplete coverage.
+6. Parse specimen metadata from structured sources first, with VLM fallback when metadata is missing.
+7. Persist per-image outcomes (timings, counts, QA flags, notes, retry decisions) into SQLite for queryable run history.
+8. Drive dashboards and review notebooks from database state so monitoring is tied to recorded pipeline results, not transient filesystem scans.
 
 ## Project Structure
 - `data/raw/`: Input feather `.jpg` files.
@@ -58,10 +61,10 @@ You can run orchestration from a hosted notebook/kernel while keeping data and m
    ```bash
    python -m src.submit_remote_pipeline \
      --host 10.0.0.148 \
-     --user openteams \
-     --key-path ~/.ssh/ubuntu-mac-openteams-admin \
-     --remote-input-dir /Users/openteams/Feather_Molt_Project/data/raw \
-     --remote-output-dir /Users/openteams/Feather_Molt_Project/data/processed
+     --user cluster_user \
+     --key-path ~/.ssh/ubuntu-mac-cluster_user-admin \
+     --remote-input-dir ~/Feather_Molt_Project/data/raw \
+     --remote-output-dir ~/Feather_Molt_Project/data/processed
    ```
 
 The notebook host acts as a control plane only. Celery workers do the heavy model inference.

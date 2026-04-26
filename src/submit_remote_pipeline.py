@@ -63,7 +63,7 @@ def main() -> None:
         description="Dispatch remote image paths to Celery workers without local dataset copies."
     )
     parser.add_argument("--host", required=True, help="Cluster head host/IP for SSH path discovery")
-    parser.add_argument("--user", default="openteams", help="SSH user")
+    parser.add_argument("--user", default="cluster_user", help="SSH user")
     parser.add_argument("--key-path", default="", help="Optional SSH private key path")
     parser.add_argument("--remote-input-dir", required=True, help="Input dir path as seen on cluster nodes")
     parser.add_argument("--remote-output-dir", required=True, help="Output dir path as seen on cluster nodes")

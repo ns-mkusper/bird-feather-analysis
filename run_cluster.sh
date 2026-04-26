@@ -5,13 +5,13 @@ echo "=========================================="
 echo "🚀 STARTING MULTI-NODE CELERY CLUSTER 🚀"
 echo "=========================================="
 
-KEY="~/.ssh/ubuntu-mac-openteams-admin"
-USER="openteams"
+KEY="~/.ssh/ubuntu-mac-cluster_user-admin"
+USER="cluster_user"
 HEAD_IP="10.0.0.148"
 WORKER_IPS=("10.0.0.63" "10.0.0.19" "10.0.0.118")
-REPO_DIR="/Users/openteams/Feather_Molt_Project"
-PYTHON_BIN="/Users/openteams/miniforge3/envs/feather_env/bin/python"
-PIP_BIN="/Users/openteams/miniforge3/envs/feather_env/bin/pip"
+REPO_DIR="~/Feather_Molt_Project"
+PYTHON_BIN="~/miniforge3/envs/feather_env/bin/python"
+PIP_BIN="~/miniforge3/envs/feather_env/bin/pip"
 
 # Dynamically construct SSH options to suppress missing identity file warnings
 # if running directly on a node that doesn't have the key
@@ -33,7 +33,7 @@ sync_env_file() {
 
 echo "1. Preparing HEAD node ($HEAD_IP)..."
 ssh $SSH_OPTS $USER@$HEAD_IP "
-  source /Users/openteams/miniforge3/etc/profile.d/conda.sh
+  source ~/miniforge3/etc/profile.d/conda.sh
   conda activate feather_env >/dev/null 2>&1 || true
   $PIP_BIN install -q --upgrade pip
   $PIP_BIN install -q torch torchvision ultralytics pandas open_clip_torch einops kornia timm mlx_vlm grad-cam opencv-python python-dotenv 'celery[redis]' flower redis pi-heif
@@ -53,8 +53,8 @@ ssh $SSH_OPTS $USER@$HEAD_IP "
       REDIS_BIN=/opt/homebrew/bin/redis-server
     else
       conda install -y -n feather_env -c conda-forge redis >/dev/null 2>&1 || true
-      if [ -x /Users/openteams/miniforge3/envs/feather_env/bin/redis-server ]; then
-        REDIS_BIN=/Users/openteams/miniforge3/envs/feather_env/bin/redis-server
+      if [ -x ~/miniforge3/envs/feather_env/bin/redis-server ]; then
+        REDIS_BIN=~/miniforge3/envs/feather_env/bin/redis-server
       fi
     fi
   fi
@@ -81,20 +81,20 @@ echo "2. Preparing WORKER nodes..."
 for ip in "${WORKER_IPS[@]}"; do
   echo "   -> $ip"
   ssh $SSH_OPTS $USER@$ip "
-    if [ ! -d '/Users/openteams/miniforge3' ]; then
+    if [ ! -d '~/miniforge3' ]; then
       curl -sL https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-MacOSX-arm64.sh -o miniforge.sh
-      bash miniforge.sh -b -p /Users/openteams/miniforge3 >/dev/null 2>&1
+      bash miniforge.sh -b -p ~/miniforge3 >/dev/null 2>&1
       rm miniforge.sh
     fi
 
-    source /Users/openteams/miniforge3/etc/profile.d/conda.sh
+    source ~/miniforge3/etc/profile.d/conda.sh
     if ! conda env list | grep -q 'feather_env'; then
       conda create -y -n feather_env -c conda-forge python=3.10 >/dev/null 2>&1
     fi
     conda activate feather_env
 
-    /Users/openteams/miniforge3/envs/feather_env/bin/pip install -q --upgrade pip
-    /Users/openteams/miniforge3/envs/feather_env/bin/pip install -q torch torchvision ultralytics pandas open_clip_torch einops kornia timm mlx_vlm grad-cam opencv-python python-dotenv 'celery[redis]' flower redis pi-heif
+    ~/miniforge3/envs/feather_env/bin/pip install -q --upgrade pip
+    ~/miniforge3/envs/feather_env/bin/pip install -q torch torchvision ultralytics pandas open_clip_torch einops kornia timm mlx_vlm grad-cam opencv-python python-dotenv 'celery[redis]' flower redis pi-heif
 
     if [ ! -d '$REPO_DIR/.git' ]; then
       git clone git@github.com:ns-mkusper/birth-feather-thesis.git '$REPO_DIR' >/dev/null 2>&1

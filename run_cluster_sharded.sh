@@ -1,13 +1,13 @@
 #!/bin/bash
 set -euo pipefail
 
-KEY="$HOME/.ssh/ubuntu-mac-openteams-admin"
-USER="openteams"
+KEY="$HOME/.ssh/ubuntu-mac-cluster_user-admin"
+USER="cluster_user"
 DEFAULT_NODES_CSV="10.0.0.148,10.0.0.63,10.0.0.19,10.0.0.118"
 NODES_CSV="${NODES_CSV:-$DEFAULT_NODES_CSV}"
 IFS=',' read -r -a NODES <<< "$NODES_CSV"
-REPO_DIR="/Users/openteams/Feather_Molt_Project"
-PYTHON_BIN="/Users/openteams/miniforge3/envs/feather_env/bin/python"
+REPO_DIR="~/Feather_Molt_Project"
+PYTHON_BIN="~/miniforge3/envs/feather_env/bin/python"
 OUTPUT_SUBDIR="${OUTPUT_SUBDIR:-}"
 MAX_IMAGES="${MAX_IMAGES:-}"
 ENABLE_VLM="${ENABLE_VLM:-0}"

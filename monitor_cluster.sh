@@ -10,7 +10,7 @@ fi
 echo "Worker Nodes Memory Pressure:"
 for ip in 10.0.0.63 10.0.0.19 10.0.0.118; do
    echo -n "Node $ip: "
-   ssh -i ~/.ssh/ubuntu-mac-openteams-admin -o StrictHostKeyChecking=no openteams@$ip "vm_stat | grep 'Pages active'" 2>/dev/null || echo "Offline"
+   ssh -i ~/.ssh/ubuntu-mac-cluster_user-admin -o StrictHostKeyChecking=no cluster_user@$ip "vm_stat | grep 'Pages active'" 2>/dev/null || echo "Offline"
 done
 echo "----------------------------------------"
 echo "Launching interactive ASITOP Dashboard on Head Node (Press Q to quit)..."
