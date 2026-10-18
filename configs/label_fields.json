@@ -1,5 +1,5 @@
 {
-  "_comment": "Regions are fractions of the ORIGINAL slide image: [left, top, right, bottom]. They are deliberately generous because the label shifts a little from slide to slide. 'pattern' validates the normalized value; a value that fails it is kept but marked invalid_format. Edit freely and rerun the lab notebook. VLM endpoints can be overridden with FEATHER_VLM_ENDPOINTS in .env. 'fallback_regions' are wider crops tried in order when the primary and expanded crops give no readable value; 'verify' re-reads a readable value on a second crop and sends disagreements to review. expand_margin is [x, y] added on each side for the 'expanded' crop. 'expand_margin' and 'partial_min_confidence' can also be set per field. A code the model reports as only partly visible is accepted only at confidence >= partial_min_confidence, otherwise needs_review.",
+  "_comment": "The red/blue text line under the label boxes and the code above the date are ignored on purpose. Regions are fractions of the ORIGINAL slide image: [left, top, right, bottom]. They are deliberately generous because the label shifts a little from slide to slide. 'pattern' validates the normalized value; a value that fails it is kept but marked invalid_format. Edit freely and rerun the lab notebook. VLM endpoints can be overridden with FEATHER_VLM_ENDPOINTS in .env. 'fallback_regions' are wider crops tried in order when the primary and expanded crops give no readable value; 'verify' re-reads a readable value on a second crop and sends disagreements to review. expand_margin is [x, y] added on each side for the 'expanded' crop. 'expand_margin' and 'partial_min_confidence' can also be set per field. A code the model reports as only partly visible is accepted only at confidence >= partial_min_confidence, otherwise needs_review.",
   "vlm": {
     "endpoints": [
       "http://localhost:8790"
@@ -12,14 +12,14 @@
     "timeout": 180
   },
   "fields": {
-    "individual_id": {
+    "bird_id": {
       "region": [
         0.22,
         0.0,
         0.82,
         0.11
       ],
-      "prompt": "This crop shows a large black bird ID code on a white label, formatted like 'A 0012 H' or 'BB 17692' (1-2 letters, 4-5 digits, optional trailing letter). Read it exactly.",
+      "prompt": "This crop shows the bird ID: the large black code in the top-center box of a specimen label, formatted like 'A 0012 H' or 'BB 17692 H' (1-2 letters, 4-5 digits, usually a trailing letter). Read it exactly; ignore any smaller text below it.",
       "pattern": "^[A-Z]{1,2}\\d{4,5}[A-Z]?$",
       "normalize": "remove_spaces_upper",
       "fallback_regions": [
@@ -92,30 +92,6 @@
       ],
       "verify": false
     },
-    "feather": {
-      "region": [
-        0.0,
-        0.15,
-        0.85,
-        0.25
-      ],
-      "prompt": "This crop shows the strip just below the specimen label, where a line of red (sometimes blue) text describing the feather is printed at the left, e.g. '3. TERT', 'FOTO' or 'BJ 86 822 H'. Part of it may be hidden under a black board or feathers. Transcribe only the characters you can actually see in THIS image; put '...' where text is hidden. Do not invent or complete words. The black or red species code (e.g. HAFLU, SVFLU) and age codes (e.g. 2K, 4K+) belong to the label above and are NOT the feather line: if those are the only text you see, answer visible=no and value=null.",
-      "pattern": null,
-      "normalize": "strip",
-      "allow_partial": true,
-      "fallback_regions": [
-        [
-          0.0,
-          0.155,
-          1.0,
-          0.32
-        ]
-      ],
-      "expand_margin": [
-        0.06,
-        0.0
-      ]
-    },
     "date": {
       "region": [
         0.7,
@@ -123,7 +99,7 @@
         1.0,
         1.0
       ],
-      "prompt": "This crop shows a date in blue text at the bottom-right of a specimen slide, formatted YYYY-MM-DD. Return only the date.",
+      "prompt": "This crop shows a date in blue text at the bottom-right of a specimen slide, formatted YYYY-MM-DD. Return only that date. Ignore the short black code printed just above it (e.g. '2B', '11C', 'X'): it is not part of the date.",
       "pattern": "^(19|20)\\d{2}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])$",
       "normalize": "date",
       "fallback_regions": [
@@ -143,7 +119,7 @@
       "verify": true
     }
   },
-  "answer_rules": "Answer with JSON only: {\"value\": <text or null>, \"visible\": \"yes\" | \"partly\" | \"no\", \"confidence\": <0-1>}. Use visible=no and value=null ONLY if that text is truly absent or fully covered in the crop; never guess characters you cannot see.",
+  "answer_rules": "Answer with JSON only: {\"value\": <text or null>, \"visible\": \"yes\" | \"partly\" | \"no\", \"confidence\": <0-1>}. Use visible=no and value=null ONLY if that text is truly absent or fully covered in the crop; never guess characters you cannot see. Use only plain Latin letters, digits and normal punctuation in value; never escape sequences.",
   "expand_margin": [
     0.06,
     0.04

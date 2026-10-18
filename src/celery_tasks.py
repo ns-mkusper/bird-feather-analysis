@@ -46,12 +46,18 @@ def process_image(self, image_path: str, output_dir: str) -> dict:
     # Label table first, from the original slide; cached per output dir, so a
     # retry of this task does not ask the model again.
     labels = processor.extract_labels(image_path, output_dir)
-    result = processor.process_image(image_path=image_path, output_dir=output_dir)
+    result = processor.process_image(image_path=image_path, output_dir=output_dir, labels=labels)
+    if labels is not None:
+        # cache the feather IDs with the slide's label result
+        from src import label_extract as lx
+
+        lx.save_pipeline_result(labels, output_dir)
     return {
         "image_path": result.image_path,
         "success": result.success,
         "reason": result.reason,
         "worker": os.uname().nodename,
+        "feather_ids": result.feather_ids,
         "labels": labels.to_json() if labels is not None else None,
     }
 

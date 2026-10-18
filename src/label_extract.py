@@ -1,14 +1,18 @@
 """Specimen label extraction: the second output table.
 
-Reads the label fields (individual ID, species, age, sex, feather line, date)
-from the ORIGINAL slide image, not the segmentation overlay. Each field gets
-its own crop (configs/label_fields.json) and its own constrained VLM prompt, so
-one hard field (the feather line, often under the black board) cannot spoil
-the others.
+Reads the label fields (bird ID, species, age, sex, date) from the ORIGINAL
+slide image, not the segmentation overlay. Each field gets its own crop
+(configs/label_fields.json) and its own constrained VLM prompt, so one
+obscured field cannot spoil the others. The red/blue text line under the
+label boxes and the short code above the date (e.g. '2B') are ignored.
 
-Two identifiers are kept apart:
-  file_id         the digital file name, e.g. 'A0012 1996-im1058.jpg'
-  individual_id   the code printed on the specimen label, e.g. 'A0012H'
+Identifiers:
+  file_id     the digital file name, e.g. 'A0012 1996-im1058.jpg'
+  bird_id     the code printed top-center on the label, e.g. 'A0012H';
+              backup: the leading ID of the file name ('A0012')
+  feather_id  one per segmented feather: <bird_id>_<year>_<letter>, letters
+              A, B, C ... from left to right (e.g. 'A0012H_1996_A'); the same
+              bird can have slides from several years
 The file name is parsed separately (filename_id 'A0012', filename_year '1996')
 and only ever used as a cross-check or a labelled fallback, never as if it had
 been read from the image.
@@ -23,7 +27,7 @@ readings disagree the field goes to review instead of passing.
 
 Every field ends with one status, so a missing value always says why:
   readable           read, passed the format check (and verification)
-  partial            only part of the text is visible (feather line)
+  partial            only part of the text is visible (fields with allow_partial)
   needs_review       read, but fails the format check or the two readings disagree
   conflict           readable on the slide but disagrees with the file name
   filename_fallback  nothing readable on the slide; value comes from the file name
@@ -69,10 +73,15 @@ from PIL import Image
 REPO = Path(__file__).resolve().parent.parent
 load_dotenv(REPO / ".env", override=False)  # FEATHER_VLM_ENDPOINTS etc.
 DEFAULT_CONFIG = REPO / "configs" / "label_fields.json"
-FIELDS_ORDER = ["individual_id", "species", "age", "sex", "feather", "date"]
+FIELDS_ORDER = ["bird_id", "species", "age", "sex", "date"]
 DATE_PARTS = ["year", "month", "day"]
-EXPORT_ORDER = ["individual_id", "species", "age", "sex", "feather", *DATE_PARTS]
-EXTRACTOR_VERSION = "label_extract/2"
+EXPORT_ORDER = ["bird_id", "species", "age", "sex", *DATE_PARTS]
+EXTRACTOR_VERSION = "label_extract/3"
+SEQ_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+# Everything printed on the labels is plain Latin letters, digits and a few
+# separators. Anything else in an answer (escape sequences, non-breaking
+# spaces, other scripts) means the model misfired: a technical error.
+PLAIN_TEXT = re.compile(r"^[A-Za-z0-9 +\-./:;,'()]*$")
 
 READABLE = "readable"
 REVIEW_STATUSES = {"partial", "needs_review", "conflict", "filename_fallback", "model_error"}
@@ -116,6 +125,7 @@ class LabelResult:
     extracted_at: str = ""
     node: str = ""
     model: str = ""
+    feathers: list[dict] = field(default_factory=list)  # from segmentation, left to right
 
     @property
     def file_id(self) -> str:
@@ -164,12 +174,37 @@ class LabelResult:
         for k, (v, st) in self.date_parts().items():
             out[k] = export_value(v, st)
             out[f"{k}_status"] = st
+        out["feather_count"] = len(self.feathers) if self.feathers else None
+        out["feather_ids"] = ";".join(f["feather_id"] for f in self.feathers)
         return out
+
+    def id_parts(self) -> dict:
+        """bird_id and year used for feather IDs, with where each came from:
+        the label when it gave a value, else the file name."""
+        f = self.fields.get("bird_id")
+        if f is not None and f.value and f.status != "model_error":
+            bird, bird_src = f.value, ("label" if f.status != "filename_fallback" else "filename")
+            bird_status = f.status
+        elif self.filename.get("id"):
+            bird, bird_src, bird_status = self.filename["id"], "filename", "filename_fallback"
+        else:
+            bird, bird_src, bird_status = "UNKNOWN", "none", "not_found"
+        d = self.fields.get("date")
+        year = split_date(d.value)["year"] if d is not None and d.status != "model_error" else None
+        if year:
+            year_src = "label" if d.status != "filename_fallback" else "filename"
+            year_status = d.status
+        elif self.filename.get("year"):
+            year, year_src, year_status = self.filename["year"], "filename", "filename_fallback"
+        else:
+            year, year_src, year_status = "UNKNOWN", "none", "not_found"
+        return {"bird_id": bird, "bird_id_source": bird_src, "bird_id_status": bird_status,
+                "year": year, "year_source": year_src, "year_status": year_status}
 
     def to_json(self) -> dict:
         d = {"file_id": self.file_id, "image": self.image, "extracted_at": self.extracted_at,
              "extractor": EXTRACTOR_VERSION, "seconds": round(self.seconds, 2),
-             "node": self.node, "model": self.model,
+             "node": self.node, "model": self.model, "feathers": self.feathers,
              "filename": self.filename, "needs_review": self.needs_review,
              "fields": {k: asdict(v) for k, v in self.fields.items()}}
         d["date_parts"] = {k: {"value": v, "status": s} for k, (v, s) in self.date_parts().items()}
@@ -178,7 +213,8 @@ class LabelResult:
     @classmethod
     def from_json(cls, d: dict) -> "LabelResult":
         r = cls(d["image"], filename=d.get("filename", {}), seconds=d.get("seconds", 0),
-                extracted_at=d.get("extracted_at", ""), node=d.get("node", ""), model=d.get("model", ""))
+                extracted_at=d.get("extracted_at", ""), node=d.get("node", ""), model=d.get("model", ""),
+                feathers=d.get("feathers") or [])
         for k, v in d.get("fields", {}).items():
             atts = [Attempt(**a) for a in v.pop("attempts", [])]
             r.fields[k] = FieldResult(**v, attempts=atts)
@@ -206,6 +242,45 @@ def split_date(value: str | None) -> dict[str, str | None]:
     if m.group(3) and 1 <= int(m.group(3)) <= 31:
         out["day"] = m.group(3)
     return out
+
+
+def seq_letter(index: int) -> str:
+    """0 -> 'A' (leftmost feather), 1 -> 'B', ..."""
+    return SEQ_LETTERS[index] if index < len(SEQ_LETTERS) else f"Z{index - len(SEQ_LETTERS) + 1}"
+
+
+def feather_id(bird_id: str, year: str, index: int) -> str:
+    """'A0012H', '1996', 0 -> 'A0012H_1996_A'."""
+    return f"{bird_id}_{year}_{seq_letter(index)}"
+
+
+def assign_feather_ids(result: "LabelResult", crops: list[str]) -> list[dict]:
+    """Feather IDs for a slide's segmented feathers. `crops` must already be in
+    left-to-right order (the segmenter sorts by x). Stored on the result."""
+    parts = result.id_parts()
+    result.feathers = [{"seq": seq_letter(i), "feather_id": feather_id(parts["bird_id"], parts["year"], i),
+                        "crop": Path(c).name, **parts} for i, c in enumerate(crops)]
+    return result.feathers
+
+
+_CROP_RX = re.compile(r"^(?P<stem>.+?)_[^_]+_[^_]+_Feather_(?P<idx>\d+)\.jpg$")
+
+
+def attach_feathers_from_crops(results: list["LabelResult"], crops_dir: str | Path) -> int:
+    """Feather IDs from a segmentation output folder (crop files named
+    '<slide stem>_<id>_<date>_Feather_<n>.jpg', n = 1.. left to right)."""
+    by_stem: dict[str, list[tuple[int, str]]] = defaultdict(list)
+    for p in Path(crops_dir).glob("*_Feather_*.jpg"):
+        m = _CROP_RX.match(p.name)
+        if m:
+            by_stem[m.group("stem")].append((int(m.group("idx")), str(p)))
+    n = 0
+    for r in results:
+        crops = [c for _, c in sorted(by_stem.get(Path(r.image).stem, []))]
+        if crops:
+            assign_feather_ids(r, crops)
+            n += 1
+    return n
 
 
 def load_config(path: str | Path | None = None) -> dict:
@@ -357,6 +432,8 @@ class MalformedAnswer(ValueError):
 
 def parse_answer(text: str) -> tuple[str | None, str, float | None]:
     """Returns (value, visible, confidence) from the model's JSON answer."""
+    if re.search(r"\\u[0-9a-fA-F]{4}|\\x[0-9a-fA-F]{2}", text):
+        raise MalformedAnswer(f"escape sequence in answer: {text[:60]!r}")
     m = re.search(r"\{.*\}", text, re.S)
     if m:
         try:
@@ -415,6 +492,8 @@ def _attempt(client: VLMClient, image: Image.Image, crop_name: str, region: list
                        error=f"{type(exc).__name__}: {exc}", evidence=ev)
     try:
         value, visible, conf = parse_answer(raw)
+        if value is not None and not PLAIN_TEXT.match(str(value)):
+            raise MalformedAnswer(f"characters that are not on any label: {str(value)[:40]!r}")
     except MalformedAnswer as exc:
         return Attempt(crop_name, region, None, "error", None, raw, round(time.monotonic() - t, 2),
                        error=str(exc), evidence=ev)
@@ -486,7 +565,7 @@ def apply_filename(result: LabelResult, cfg: dict) -> None:
     fn = result.filename
     allow = cfg.get("filename_fallback", True) and fn.get("parse") == "standard"
 
-    f = result.fields.get("individual_id")
+    f = result.fields.get("bird_id")
     if f is not None and fn.get("id"):
         f.filename_value = fn["id"]
         if f.status == READABLE and not (f.value or "").startswith(fn["id"]):
@@ -567,7 +646,15 @@ def extract_for_pipeline(image_path: str | Path, output_dir: str | Path, client,
         r = extract(image_path, cfg, client, evidence_dir=label_dir / "evidence")
     except Exception as exc:  # noqa: BLE001
         r = failed_result(image_path, exc)
+    return save_pipeline_result(r, output_dir)
+
+
+def save_pipeline_result(r: LabelResult, output_dir: str | Path) -> LabelResult:
+    """Writes <output_dir>/labels/<stem>.json atomically (also after feather
+    IDs are added by segmentation)."""
+    label_dir = Path(output_dir) / "labels"
     label_dir.mkdir(parents=True, exist_ok=True)
+    cache = label_dir / f"{Path(r.image).stem}.json"
     tmp = cache.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(r.to_json()))
     tmp.replace(cache)
@@ -632,25 +719,50 @@ CREATE TABLE IF NOT EXISTS specimen_labels (
     model TEXT,
     needs_review INTEGER,
     filename_id TEXT, filename_year TEXT, filename_parse TEXT,
-    individual_id TEXT, individual_id_status TEXT, individual_id_source TEXT,
+    bird_id TEXT, bird_id_status TEXT, bird_id_source TEXT,
     species TEXT, species_status TEXT, species_source TEXT,
     age TEXT, age_status TEXT, age_source TEXT,
     sex TEXT, sex_status TEXT, sex_source TEXT,
-    feather TEXT, feather_status TEXT, feather_source TEXT,
     year TEXT, month TEXT, day TEXT, date_status TEXT, date_source TEXT,
+    feather_count INTEGER, feather_ids TEXT,
     seconds REAL,
     detail_json TEXT,
     PRIMARY KEY (run_id, node_id, file_id)
 )"""
 
 
+FEATHER_SQL = """
+CREATE TABLE IF NOT EXISTS specimen_feathers (
+    run_id TEXT NOT NULL,
+    node_id TEXT NOT NULL,
+    file_id TEXT NOT NULL,
+    seq TEXT NOT NULL,
+    feather_id TEXT,
+    bird_id TEXT, bird_id_source TEXT, bird_id_status TEXT,
+    year TEXT, year_source TEXT, year_status TEXT,
+    crop TEXT,
+    PRIMARY KEY (run_id, node_id, file_id, seq)
+)"""
+
+
+def _expected_cols(sql: str) -> set[str]:
+    conn = sqlite3.connect(":memory:")
+    conn.execute(sql)
+    table = re.search(r"EXISTS (\w+)", sql).group(1)
+    return {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+
+
 def ensure_label_table(conn: sqlite3.Connection) -> None:
-    cols = {row[1] for row in conn.execute("PRAGMA table_info(specimen_labels)").fetchall()}
-    if cols and "node_id" not in cols:
-        # First version keyed rows by (run, file) only; the primary key cannot be
-        # altered in place, so keep the old rows aside and start the new table.
-        conn.execute("ALTER TABLE specimen_labels RENAME TO specimen_labels_v1")
-    conn.execute(SQL_SCHEMA)
+    """Creates specimen_labels/specimen_feathers; a table from an older layout
+    (different columns or key) is renamed to <table>_old<N> and kept."""
+    for table, sql in (("specimen_labels", SQL_SCHEMA), ("specimen_feathers", FEATHER_SQL)):
+        cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        if cols and cols != _expected_cols(sql):
+            n = 1
+            while conn.execute("SELECT 1 FROM sqlite_master WHERE name=?", (f"{table}_old{n}",)).fetchone():
+                n += 1
+            conn.execute(f"ALTER TABLE {table} RENAME TO {table}_old{n}")
+        conn.execute(sql)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_specimen_labels_run ON specimen_labels(run_id)")
 
 
@@ -675,9 +787,20 @@ def upsert_labels(conn: sqlite3.Connection, results: list[LabelResult], run_id: 
             row[f"{name}_source"] = f.source
         for k, (v, st) in r.date_parts().items():
             row[k] = export_value(v, st)
+        row["feather_count"] = len(r.feathers) if r.feathers else None
+        row["feather_ids"] = ";".join(f["feather_id"] for f in r.feathers)
         cols = list(row)
         conn.execute(f"INSERT OR REPLACE INTO specimen_labels ({','.join(cols)}) "
                      f"VALUES ({','.join('?' * len(cols))})", [row[c] for c in cols])
+        conn.execute("DELETE FROM specimen_feathers WHERE run_id=? AND node_id=? AND file_id=?",
+                     (run_id, row["node_id"], r.file_id))
+        for f in r.feathers:
+            frow = {"run_id": run_id, "node_id": row["node_id"], "file_id": r.file_id,
+                    **{k: f.get(k) for k in ("seq", "feather_id", "bird_id", "bird_id_source", "bird_id_status",
+                                             "year", "year_source", "year_status", "crop")}}
+            fc = list(frow)
+            conn.execute(f"INSERT OR REPLACE INTO specimen_feathers ({','.join(fc)}) "
+                         f"VALUES ({','.join('?' * len(fc))})", [frow[c] for c in fc])
     conn.commit()
 
 
@@ -752,79 +875,6 @@ def score_against_gold(results: list[LabelResult], gold_csv: str | Path,
     for s in stats.values():
         s["accuracy"] = round(s["correct"] / s["n"], 3) if s["n"] else None
     return stats
-
-
-def _levenshtein(a: str, b: str) -> int:
-    prev = list(range(len(b) + 1))
-    for i, ca in enumerate(a, 1):
-        cur = [i]
-        for j, cb in enumerate(b, 1):
-            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
-        prev = cur
-    return prev[-1]
-
-
-def _norm_text(t: str | None) -> str:
-    t = (t or "").replace("…", " ").replace("...", " ")
-    return re.sub(r"\s+", " ", t).strip().upper()
-
-
-VISIBILITY_OF_STATUS = {READABLE: "full", "partial": "partial", "not_found": "none"}
-
-
-def score_text_field(results: list[LabelResult], gold_csv: str | Path, name: str = "feather") -> dict:
-    """Free-text field scoring (the feather line), separate from exact match.
-    Gold columns: <name>_text (only the characters actually visible) and
-    <name>_visibility (full / partial / none).
-      visibility      3-class accuracy (full/partial/none) and 2-class (text vs none)
-      cer             character error rate vs the visible gold text (case-insensitive)
-      invented_text   model returned text where none is visible
-      overreach       model returned >2 more characters than are visible on a
-                      partial line (completing hidden text)
-    model_error slides are counted apart, not scored."""
-    gold = {}
-    with open(gold_csv, newline="") as fh:
-        for row in csv.DictReader(fh):
-            if (row.get(f"{name}_visibility") or "").strip():
-                gold[row.get("image") or row.get("file_id")] = row
-    out = {"n": 0, "model_error": 0, "visibility_correct": 0, "text_vs_none_correct": 0,
-           "with_text": 0, "cer_sum": 0.0, "exact": 0, "invented_text": 0, "overreach": 0,
-           "confusion": Counter(), "rows": []}
-    for r in results:
-        g = gold.get(r.file_id)
-        f = r.fields.get(name)
-        if not g or f is None:
-            continue
-        if f.status == "model_error":
-            out["model_error"] += 1
-            continue
-        want_vis = g[f"{name}_visibility"].strip()
-        want = _norm_text(g.get(f"{name}_text"))
-        got = _norm_text(f.value) if f.status != "filename_fallback" else ""
-        got_vis = VISIBILITY_OF_STATUS.get(f.status, "full" if got else "none")
-        out["n"] += 1
-        out["confusion"][f"{want_vis}->{got_vis}"] += 1
-        out["visibility_correct"] += want_vis == got_vis
-        out["text_vs_none_correct"] += (want_vis == "none") == (got_vis == "none")
-        cer = None
-        if want:
-            out["with_text"] += 1
-            cer = min(1.0, _levenshtein(got, want) / len(want))
-            out["cer_sum"] += cer
-            out["exact"] += got == want
-            if want_vis == "partial" and len(got) > len(want) + 2:
-                out["overreach"] += 1
-        elif got:
-            out["invented_text"] += 1
-        out["rows"].append({"file_id": r.file_id, "gold": want, "gold_visibility": want_vis,
-                            "got": got, "got_visibility": got_vis, "status": f.status,
-                            "cer": None if cer is None else round(cer, 3)})
-    n, k = out["n"], out["with_text"]
-    out["visibility_accuracy"] = round(out["visibility_correct"] / n, 3) if n else None
-    out["text_vs_none_accuracy"] = round(out["text_vs_none_correct"] / n, 3) if n else None
-    out["mean_cer"] = round(out["cer_sum"] / k, 3) if k else None
-    out["confusion"] = dict(out["confusion"])
-    return out
 
 
 # ---------------------------------------------------------------- selection / CLI
@@ -981,18 +1031,86 @@ def run_distributed(chosen: list[str], out: Path, remote_output_dir: str | None 
         log(f"  TIMEOUT {Path(p).name}: still queued or running; rerun to collect it")
 
 
-def finish_run(out: Path, chosen: list[str], cfg: dict, gold: str | Path | None = None) -> dict:
-    """Writes labels.csv, review.csv, labels.sqlite3 and summary.json from
-    out/labels.jsonl (the latest result per slide) and scores against gold."""
+def write_feathers_csv(results: list[LabelResult], path: Path) -> Path:
+    cols = ["file_id", "seq", "feather_id", "bird_id", "bird_id_source", "bird_id_status",
+            "year", "year_source", "year_status", "crop"]
+    with open(path, "w", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=cols)
+        w.writeheader()
+        for r in results:
+            for f in r.feathers:
+                w.writerow({"file_id": r.file_id, **{k: f.get(k) for k in cols[1:]}})
+    return path
+
+
+def load_gold(gold_csv: str | Path) -> dict[str, dict]:
+    with open(gold_csv, newline="") as fh:
+        return {(row.get("image") or row.get("file_id")): row for row in csv.DictReader(fh)}
+
+
+def slide_problems(r: LabelResult, gold_row: dict | None, cfg: dict) -> list[dict]:
+    """Everything worth a look on one slide, worst first: wrong values and
+    missed fields (vs the gold answers), technical errors, reviews, fallbacks."""
+    out = []
+    for name, f in r.fields.items():
+        want = (gold_row or {}).get(name, "").strip()
+        if want:
+            if want.upper() == NA:
+                if f.status not in ("not_found", "filename_fallback"):
+                    out.append({"field": name, "kind": "wrong", "got": f.value, "want": NA, "status": f.status})
+                    continue
+            else:
+                want_n = normalize(want, cfg["fields"][name].get("normalize"))
+                if f.status == "not_found":
+                    out.append({"field": name, "kind": "missed", "got": None, "want": want_n, "status": f.status})
+                    continue
+                if f.value != want_n and f.status != "model_error":
+                    kind = "wrong" if f.status == READABLE else "flagged_wrong"
+                    out.append({"field": name, "kind": kind, "got": f.value, "want": want_n, "status": f.status})
+                    continue
+        if f.status == "model_error":
+            out.append({"field": name, "kind": "model_error", "got": None, "want": want or None, "status": f.status})
+        elif f.status in ("needs_review", "conflict", "filename_fallback", "partial"):
+            out.append({"field": name, "kind": f.status, "got": f.value, "want": want or None, "status": f.status,
+                        "note": f.note})
+    want_n = (gold_row or {}).get("feather_count", "").strip()
+    if want_n and r.feathers is not None and str(len(r.feathers)) != want_n:
+        out.append({"field": "feathers", "kind": "count", "got": len(r.feathers), "want": int(want_n),
+                    "status": "segmentation"})
+    rank = {"wrong": 0, "missed": 1, "model_error": 2, "count": 3, "flagged_wrong": 4, "conflict": 5,
+            "needs_review": 6, "filename_fallback": 7, "partial": 8}
+    return sorted(out, key=lambda p: rank.get(p["kind"], 9))
+
+
+def score_feather_counts(results: list[LabelResult], gold_csv: str | Path) -> dict | None:
+    gold = load_gold(gold_csv)
+    rows = [(r.file_id, len(r.feathers), int(gold[r.file_id]["feather_count"])) for r in results
+            if r.feathers and (gold.get(r.file_id) or {}).get("feather_count", "").strip()]
+    if not rows:
+        return None
+    return {"n": len(rows), "correct": sum(g == w for _, g, w in rows),
+            "wrong": [(f, g, w) for f, g, w in rows if g != w]}
+
+
+def finish_run(out: Path, chosen: list[str], cfg: dict, gold: str | Path | None = None,
+               segmentation_dir: str | Path | None = None) -> dict:
+    """Writes labels.csv, review.csv, feathers.csv, labels.sqlite3 and
+    summary.json from out/labels.jsonl (the latest result per slide), with
+    feather IDs from a segmentation output folder when given, and scores
+    against gold."""
     final = load_previous(out / "labels.jsonl")
     results = [final[Path(p).name] for p in chosen if Path(p).name in final]
+    if segmentation_dir and Path(segmentation_dir).exists():
+        attach_feathers_from_crops(results, segmentation_dir)
+    write_feathers_csv(results, out / "feathers.csv")
     write_csv(results, out / "labels.csv")
     write_review_csv(results, out / "review.csv")
     write_sqlite(results, out / "labels.sqlite3", out.name, cfg["vlm"]["model"])
     summary = summarize(results)
+    summary["slides_with_feather_ids"] = sum(bool(r.feathers) for r in results)
     if gold and Path(gold).exists():
         summary["gold"] = score_against_gold(results, gold, cfg)
-        summary["gold_feather_text"] = score_text_field(results, gold, "feather")
+        summary["gold_feather_count"] = score_feather_counts(results, gold)
     (out / "summary.json").write_text(json.dumps(summary, indent=2))
     return summary
 
@@ -1010,10 +1128,9 @@ def print_summary(summary: dict, out: Path | None = None, log=print) -> None:
         for name, s in summary["gold"].items():
             log(f"  {name:14} {s['correct']}/{s['n']}  acc={s['accuracy']}  "
                 f"wrong_value={s['wrong_value']}  false_na={s['false_na']}")
-        t = summary["gold_feather_text"]
-        log(f"feather text: visibility {t['visibility_correct']}/{t['n']} ({t['visibility_accuracy']}), "
-            f"text-vs-none {t['text_vs_none_accuracy']}, mean CER {t['mean_cer']} on {t['with_text']} lines, "
-            f"exact {t['exact']}, invented {t['invented_text']}, overreach {t['overreach']}")
+        fc = summary.get("gold_feather_count")
+        if fc:
+            log(f"  feather count  {fc['correct']}/{fc['n']}  wrong: {fc['wrong']}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1035,6 +1152,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--timeout", type=float, default=3600, help="seconds to wait for the workers")
     ap.add_argument("--out", default=None, help="output dir (default data/label_runs/<timestamp>)")
     ap.add_argument("--gold", default=None, help="hand-labelled CSV to score against")
+    ap.add_argument("--segmentation-dir", default=None,
+                    help="segmentation output folder (e.g. data/sample_runs/<id>) for feather IDs")
     args = ap.parse_args(argv)
 
     cfg = load_config(args.config)
@@ -1055,7 +1174,7 @@ def main(argv: list[str] | None = None) -> int:
         run_distributed(todo, out, timeout=args.timeout)
     else:
         run_local(todo, out, cfg, args.fields.split(",") if args.fields else None, args.workers)
-    print_summary(finish_run(out, chosen, cfg, args.gold), out)
+    print_summary(finish_run(out, chosen, cfg, args.gold, args.segmentation_dir), out)
     return 0
 
 

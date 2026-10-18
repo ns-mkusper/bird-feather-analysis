@@ -462,12 +462,12 @@ def run_shard(
             local_state["labels_seconds_sum"] = float(local_state.get("labels_seconds_sum", 0.0)) + labels.seconds
             _emit_labels(metrics_redis, run_id, node_id, label_counters)
         t0 = time.perf_counter()
-        result = processor.process_image(path, output_dir, profile="default")
+        result = processor.process_image(path, output_dir, profile="default", labels=labels)
         retry_used = False
         retry_selected = False
         if should_retry(result):
             retry_used = True
-            retry_result = processor.process_image(path, output_dir, profile="strict_retry")
+            retry_result = processor.process_image(path, output_dir, profile="strict_retry", labels=labels)
             if retry_result.success:
                 base_penalty = qa_penalty(result)
                 retry_penalty = qa_penalty(retry_result)
@@ -485,6 +485,11 @@ def run_shard(
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
         if result.success:
             ok += 1
+        if labels is not None:
+            # Feather IDs of the crops actually kept (the retry may have won).
+            labels.feathers = result.feather_ids
+            lx.save_pipeline_result(labels, output_dir)
+            lx.upsert_labels(stats_conn, [labels], run_id, node_id=node_id)
 
         local_state["processed"] = int(local_state["processed"]) + 1
         local_state["success"] = int(local_state["success"]) + (1 if result.success else 0)

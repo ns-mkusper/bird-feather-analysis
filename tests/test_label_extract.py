@@ -91,20 +91,13 @@ def test_verify_disagreement_goes_to_review(img):
     assert f.status == "readable"
 
 
-def test_feather_partial_stops_chain(img):
-    cfg = lx.load_config()
-    f = lx.read_field(FakeClient([_ans("RM-H pga SVFLU-...", "partly")]), img, "feather",
-                      cfg["fields"]["feather"], cfg)
-    assert f.status == "partial" and len(f.attempts) == 1
-
-
 def test_filename_conflict_and_fallback():
     cfg = lx.load_config()
     r = lx.LabelResult("x/A0012 1996-im1058.jpg", filename=lx.parse_filename("A0012 1996-im1058.jpg"))
-    r.fields["individual_id"] = lx.FieldResult("A0013H", "readable", source="primary")
+    r.fields["bird_id"] = lx.FieldResult("A0013H", "readable", source="primary")
     r.fields["date"] = lx.FieldResult(None, "not_found")
     lx.apply_filename(r, cfg)
-    assert r.fields["individual_id"].status == "conflict"
+    assert r.fields["bird_id"].status == "conflict"
     d = r.fields["date"]
     assert (d.value, d.status, d.source) == ("1996", "filename_fallback", "filename")
     row = r.row()
@@ -114,10 +107,10 @@ def test_filename_conflict_and_fallback():
 def test_lenient_filename_never_used_as_fallback():
     cfg = lx.load_config()
     r = lx.LabelResult("AX868161996-img0194.jpg", filename=lx.parse_filename("AX868161996-img0194.jpg"))
-    r.fields["individual_id"] = lx.FieldResult(None, "not_found")
+    r.fields["bird_id"] = lx.FieldResult(None, "not_found")
     lx.apply_filename(r, cfg)
-    assert r.fields["individual_id"].status == "not_found"
-    assert r.row()["individual_id"] == "N/A"
+    assert r.fields["bird_id"].status == "not_found"
+    assert r.row()["bird_id"] == "N/A"
 
 
 def test_json_roundtrip_and_sqlite_upsert(tmp_path):
@@ -156,36 +149,15 @@ def test_crop_plan_regions_on_sample():
 
 def test_gold_scoring(tmp_path):
     gold = tmp_path / "g.csv"
-    gold.write_text("image,individual_id,date\nA0012 1996-im1058.jpg,A0012H,N/A\nB.jpg,,1999-01-01\n")
+    gold.write_text("image,bird_id,date\nA0012 1996-im1058.jpg,A0012H,N/A\nB.jpg,,1999-01-01\n")
     r = lx.LabelResult("A0012 1996-im1058.jpg")
-    r.fields["individual_id"] = lx.FieldResult("A0012X", "readable")
+    r.fields["bird_id"] = lx.FieldResult("A0012X", "readable")
     r.fields["date"] = lx.FieldResult("1996", "filename_fallback", source="filename")
     r2 = lx.LabelResult("B.jpg")
     r2.fields["date"] = lx.FieldResult(None, "not_found")
     s = lx.score_against_gold([r, r2], gold)
-    assert s["individual_id"]["wrong_value"] == 1 and s["individual_id"]["correct"] == 0
+    assert s["bird_id"]["wrong_value"] == 1 and s["bird_id"]["correct"] == 0
     assert s["date"]["n"] == 2 and s["date"]["correct"] == 1 and s["date"]["false_na"] == 1
-
-
-def test_feather_text_scoring(tmp_path):
-    gold = tmp_path / "g.csv"
-    gold.write_text("image,feather_text,feather_visibility\n"
-                    "a.jpg,RM-H pga SVFLU-bal,partial\nb.jpg,,none\nc.jpg,3. TERT,full\nd.jpg,FO,partial\ne.jpg,X,full\n")
-    def res(name, value, status):
-        r = lx.LabelResult(name)
-        r.fields["feather"] = lx.FieldResult(value, status)
-        return r
-    out = lx.score_text_field([
-        res("a.jpg", "RM-H pga SVFLU-bala...", "partial"),   # 1 extra char: fine, CER 1/18
-        res("b.jpg", "FOTO", "readable"),                    # invented
-        res("c.jpg", "3. TERT", "readable"),                 # exact
-        res("d.jpg", "FOTO; ISOTOP-PROV", "partial"),        # completing hidden text
-        res("e.jpg", None, "model_error"),                   # not scored
-    ], gold)
-    assert out["n"] == 4 and out["model_error"] == 1
-    assert out["invented_text"] == 1 and out["overreach"] == 1 and out["exact"] == 1
-    assert out["visibility_correct"] == 3 and out["text_vs_none_correct"] == 3
-    assert out["rows"][0]["cer"] == round(1 / 18, 3)
 
 
 def test_extract_for_pipeline_caches_and_redoes_errors(tmp_path, monkeypatch):
@@ -254,7 +226,7 @@ def test_sqlite_migrates_first_version_table(tmp_path):
     r.fields["sex"] = lx.FieldResult("M", "readable")
     lx.upsert_labels(conn, [r], "r")
     assert conn.execute("select node_id, sex from specimen_labels").fetchall() == [("n1", "M")]
-    assert conn.execute("select sex from specimen_labels_v1").fetchall() == [("F",)]
+    assert conn.execute("select sex from specimen_labels_old1").fetchall() == [("F",)]
 
 
 def test_malformed_answer_is_a_technical_failure_and_next_crop_is_tried(img):
@@ -278,7 +250,54 @@ def test_partly_visible_code_needs_confidence(img):
     assert f.status == "readable" and "partly visible" in f.note
 
 
-def test_feather_crops_stay_below_the_label_row():
+
+
+def test_feather_ids_from_label_and_filename_backup():
+    r = lx.LabelResult("x/A0012 1996-im1058.jpg", filename=lx.parse_filename("A0012 1996-im1058.jpg"))
+    r.fields["bird_id"] = lx.FieldResult("A0012H", "readable")
+    r.fields["date"] = lx.FieldResult("1996-06-04", "readable")
+    ids = lx.assign_feather_ids(r, ["s_Feather_1.jpg", "s_Feather_2.jpg", "s_Feather_3.jpg"])
+    assert [f["feather_id"] for f in ids] == ["A0012H_1996_A", "A0012H_1996_B", "A0012H_1996_C"]
+    assert ids[0]["bird_id_source"] == "label" and r.row()["feather_ids"].count(";") == 2
+    # label ID not readable -> leading ID of the file name; covered date -> file name year
+    r.fields["bird_id"] = lx.FieldResult(None, "not_found")
+    r.fields["date"] = lx.FieldResult(None, "model_error")
+    f = lx.assign_feather_ids(r, ["s_Feather_1.jpg"])[0]
+    assert f["feather_id"] == "A0012_1996_A" and f["bird_id_source"] == "filename" and f["year_source"] == "filename"
+
+
+def test_attach_feathers_from_segmentation_folder(tmp_path):
+    for n in (2, 1, 3):
+        (tmp_path / f"A0012 1996-im1058_A0012_1996_Feather_{n}.jpg").write_bytes(b"x")
+    (tmp_path / "A0012 1996-im1058_BoundingBoxes.jpg").write_bytes(b"x")
+    r = lx.LabelResult("A0012 1996-im1058.jpg", filename=lx.parse_filename("A0012 1996-im1058.jpg"))
+    r.fields["bird_id"] = lx.FieldResult("A0012H", "readable")
+    r.fields["date"] = lx.FieldResult("1996-06-04", "readable")
+    assert lx.attach_feathers_from_crops([r], tmp_path) == 1
+    assert [(f["seq"], f["crop"].split("_")[-1]) for f in r.feathers] == [("A", "1.jpg"), ("B", "2.jpg"), ("C", "3.jpg")]
+
+
+@pytest.mark.parametrize("raw", [
+    '{"value": "na\\u00a0\\u00a0", "visible": "yes", "confidence": 1}',   # escape sequence
+    '{"value": "na\u00a0\u00a0", "visible": "yes", "confidence": 1}',      # decoded non-breaking spaces
+    '{"value": "\u00c5K", "visible": "yes", "confidence": 1}',             # non-Latin letter
+])
+def test_non_plain_text_is_a_model_error(img, raw):
     cfg = lx.load_config()
-    for name, reg in lx.crop_plan(cfg["fields"]["feather"], cfg):
-        assert reg[1] >= 0.15, (name, reg)
+    spec = cfg["fields"]["sex"]
+    n = len(lx.crop_plan(spec, cfg))
+    f = lx.read_field(FakeClient([raw] * n), img, "sex", spec, cfg)
+    assert f.status == "model_error" and f.value is None
+
+
+def test_slide_problems_ranks_wrong_and_missed_first():
+    cfg = lx.load_config()
+    r = lx.LabelResult("a.jpg")
+    r.fields["bird_id"] = lx.FieldResult("A0012H", "readable")
+    r.fields["sex"] = lx.FieldResult("F", "readable")            # gold N/A -> wrong
+    r.fields["age"] = lx.FieldResult(None, "not_found")          # gold 2K -> missed
+    r.fields["species"] = lx.FieldResult("HAF", "needs_review")
+    r.feathers = [{"feather_id": "x"}] * 3
+    gold = {"bird_id": "A0012H", "sex": "N/A", "age": "2K", "species": "", "feather_count": "4"}
+    kinds = [(p["field"], p["kind"]) for p in lx.slide_problems(r, gold, cfg)]
+    assert kinds == [("sex", "wrong"), ("age", "missed"), ("feathers", "count"), ("species", "needs_review")]

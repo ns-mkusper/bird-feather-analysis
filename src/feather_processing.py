@@ -4,7 +4,7 @@ import logging
 import os
 import re
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 # conda-forge's torchvision has no Metal kernel for nms (used by SAM 3 and the
 # box NMS below); let those few ops run on the CPU instead of failing.
@@ -37,6 +37,9 @@ class ProcessResult:
     vlm_green_boxes_grouped_feathers: bool | None = None
     vlm_notes: str = ""
     processing_profile: str = "default"
+    # One entry per saved crop, left to right: seq (A, B, ...), feather_id
+    # (<bird_id>_<year>_<seq>), crop file name, and where bird_id/year came from.
+    feather_ids: list = field(default_factory=list)
 
 
 class FeatherProcessor:
@@ -384,7 +387,10 @@ class FeatherProcessor:
             return [], [], "no_masks"
         return boxes, list(sam_res.masks.data.cpu().numpy()), ""
 
-    def process_image(self, image_path: str, output_dir: str, profile: str = "default") -> ProcessResult:
+    def process_image(self, image_path: str, output_dir: str, profile: str = "default",
+                      labels=None) -> ProcessResult:
+        """`labels`: this slide's label result (extract_labels); when given, the
+        saved crops get feather IDs from its bird ID and year."""
         bird_id, date = self._infer_metadata(image_path)
         metadata_source = "filename"
         vlm_judge = {
@@ -499,6 +505,7 @@ class FeatherProcessor:
                 metadata_source = "unknown"
 
             feathers_to_save = feathers[:5]
+            saved_names = []
             for idx, feather in enumerate(feathers_to_save, start=1):
                 crop = feather["crop"]
                 img_yuv = cv2.cvtColor(crop, cv2.COLOR_BGR2YUV)
@@ -507,6 +514,12 @@ class FeatherProcessor:
 
                 filename = f"{source_stem}_{bird_id}_{date}_Feather_{idx}.jpg"
                 cv2.imwrite(os.path.join(output_dir, filename), crop_eq)
+                saved_names.append(filename)
+            feather_ids = []
+            if labels is not None:
+                from src import label_extract as lx
+
+                feather_ids = lx.assign_feather_ids(labels, saved_names)
 
             vlm_score = (
                 float(vlm_judge["quality_score_1_to_10"])
@@ -534,6 +547,7 @@ class FeatherProcessor:
                 vlm_green_boxes_grouped_feathers=vlm_judge.get("green_boxes_grouped_feathers"),
                 vlm_notes=vlm_notes,
                 processing_profile=profile,
+                feather_ids=feather_ids,
             )
         except Exception as exc:  # noqa: BLE001
             logging.exception("Failed to process image %s", image_path)

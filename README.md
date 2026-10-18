@@ -84,7 +84,7 @@ python -m src.submit_remote_pipeline \
 ```
 
 ### Fast loop: label table and sample runs
-- **Label table** (second output table: ID, species, age, sex, feather line, date read from the
+- **Label table** (second output table: bird ID, species, age, sex, date read from the
   original slide): open `notebooks/label_lab.ipynb`, set the parameters in the first cell, run.
   Regions, prompts and format rules live in `configs/label_fields.json`; edit and re-run, no
   restart. Hand-checked answers in `data/label_gold.csv` give per-field accuracy on every run.
@@ -93,12 +93,16 @@ python -m src.submit_remote_pipeline \
   `pixi run labels -- --manifest configs/label_sample_30.txt --gold data/label_gold.csv`.
   Each field tries its primary crop, an expanded crop, then wider `fallback_regions`; the ID and
   date are read twice and disagreements go to review. `file_id` (the file name) and
-  `individual_id` (the code printed on the label) are separate columns; the ID and year parsed
+  `bird_id` (the code printed top-center on the label) are separate columns; the ID and year parsed
   from the file name are only a cross-check or a labelled `filename_fallback`. `N/A` means the
   field is not on the slide; a failed model request is `model_error` and stays blank. A run
   directory holds `labels.csv`, `review.csv`, `labels.jsonl` (full detail), `labels.sqlite3`
   (`specimen_labels` table), `summary.json` and the evidence crops; rerunning with the same
   `--out` skips finished slides and retries model errors.
+  Feather IDs (`<bird_id>_<year>_<letter>`, A, B, ... left to right, e.g. `A0012H_1996_A`) come
+  from segmentation: workers assign them to the crops they keep (`specimen_feathers` table);
+  for a label-only run pass `--segmentation-dir data/sample_runs/<id>` from `pixi run sample-run`.
+  The red/blue text line under the label boxes and the code above the date are ignored.
   The model is served by `pixi run vlm-server`; point `FEATHER_VLM_ENDPOINTS` at it.
 - **Label table in cluster runs**: every `process_image` task (Celery) and every sharded run
   reads the label first, from the original slide, and keeps going with segmentation whatever
