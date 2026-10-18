@@ -1080,8 +1080,10 @@ def slide_problems(r: LabelResult, gold_row: dict | None, cfg: dict) -> list[dic
         want = (gold_row or {}).get(name, "").strip()
         if want:
             if want.upper() == NA:
-                if f.status not in ("not_found", "filename_fallback"):
-                    out.append({"field": name, "kind": "wrong", "got": f.value, "want": NA, "status": f.status})
+                if f.status not in ("not_found", "filename_fallback", "model_error"):
+                    kind = "wrong" if f.status == READABLE else "flagged_wrong"
+                    out.append({"field": name, "kind": kind, "got": f.value, "want": NA, "status": f.status,
+                                "note": f.note})
                     continue
             else:
                 want_n = normalize(want, cfg["fields"][name].get("normalize"))
