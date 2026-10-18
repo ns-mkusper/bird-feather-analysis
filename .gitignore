@@ -43,3 +43,4 @@ install_grafana_dashboards_final6.sh
 /runs/
 .env.*
 !.env.example
+notebooks/*_results.ipynb

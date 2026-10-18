@@ -1,5 +1,5 @@
 {
-  "_comment": "Regions are fractions of the ORIGINAL slide image: [left, top, right, bottom]. They are deliberately generous because the label shifts a little from slide to slide. 'pattern' validates the normalized value; a value that fails it is kept but marked invalid_format. Edit freely and rerun the lab notebook. VLM endpoints can be overridden with FEATHER_VLM_ENDPOINTS in .env. 'fallback_regions' are wider crops tried in order when the primary and expanded crops give no readable value; 'verify' re-reads a readable value on a second crop and sends disagreements to review. expand_margin is [x, y] added on each side for the 'expanded' crop.",
+  "_comment": "Regions are fractions of the ORIGINAL slide image: [left, top, right, bottom]. They are deliberately generous because the label shifts a little from slide to slide. 'pattern' validates the normalized value; a value that fails it is kept but marked invalid_format. Edit freely and rerun the lab notebook. VLM endpoints can be overridden with FEATHER_VLM_ENDPOINTS in .env. 'fallback_regions' are wider crops tried in order when the primary and expanded crops give no readable value; 'verify' re-reads a readable value on a second crop and sends disagreements to review. expand_margin is [x, y] added on each side for the 'expanded' crop. 'expand_margin' and 'partial_min_confidence' can also be set per field. A code the model reports as only partly visible is accepted only at confidence >= partial_min_confidence, otherwise needs_review.",
   "vlm": {
     "endpoints": [
       "http://localhost:8790"
@@ -95,21 +95,25 @@
     "feather": {
       "region": [
         0.0,
-        0.14,
+        0.15,
         0.85,
-        0.24
+        0.25
       ],
-      "prompt": "This crop shows a line of red text describing the feather, near the top of a specimen slide. Part of it may be hidden under a black board or feathers. Transcribe only the characters you can actually see in THIS image; put '...' where text is hidden. Do not invent or complete words.",
+      "prompt": "This crop shows the strip just below the specimen label, where a line of red (sometimes blue) text describing the feather is printed at the left, e.g. '3. TERT', 'FOTO' or 'BJ 86 822 H'. Part of it may be hidden under a black board or feathers. Transcribe only the characters you can actually see in THIS image; put '...' where text is hidden. Do not invent or complete words. The black or red species code (e.g. HAFLU, SVFLU) and age codes (e.g. 2K, 4K+) belong to the label above and are NOT the feather line: if those are the only text you see, answer visible=no and value=null.",
       "pattern": null,
       "normalize": "strip",
       "allow_partial": true,
       "fallback_regions": [
         [
           0.0,
-          0.1,
+          0.155,
           1.0,
-          0.35
+          0.32
         ]
+      ],
+      "expand_margin": [
+        0.06,
+        0.0
       ]
     },
     "date": {
@@ -144,5 +148,6 @@
     0.06,
     0.04
   ],
-  "filename_fallback": true
+  "filename_fallback": true,
+  "partial_min_confidence": 0.8
 }

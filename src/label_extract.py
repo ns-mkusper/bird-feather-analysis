@@ -244,7 +244,7 @@ def _clip(region: list[float]) -> list[float]:
 def crop_plan(spec: dict, cfg: dict) -> list[tuple[str, list[float]]]:
     """Ordered (name, region) list: primary, expanded, then configured fallbacks."""
     l, t, r, b = spec["region"]
-    mx, my = cfg.get("expand_margin", [0.06, 0.04])
+    mx, my = spec.get("expand_margin", cfg.get("expand_margin", [0.06, 0.04]))
     plan = [("primary", _clip([l, t, r, b])),
             ("expanded", _clip([l - mx, t - my, r + mx, b + my]))]
     for i, reg in enumerate(spec.get("fallback_regions", []), 1):
@@ -338,6 +338,7 @@ def normalize(value: str | None, how: str | None) -> str | None:
     if value is None:
         return None
     v = str(value).strip()
+    v = v.replace("\u00a0", " ").strip()
     if v.lower() in ("null", "none", "n/a", ""):
         return None
     if how == "remove_spaces_upper":
@@ -347,6 +348,11 @@ def normalize(value: str | None, how: str | None) -> str | None:
         if m:
             v = f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
     return v or None
+
+
+class MalformedAnswer(ValueError):
+    """The model started a JSON answer but it does not parse (often a
+    degenerate, truncated reply). A technical failure, not a reading."""
 
 
 def parse_answer(text: str) -> tuple[str | None, str, float | None]:
@@ -359,22 +365,33 @@ def parse_answer(text: str) -> tuple[str | None, str, float | None]:
             val = d.get("value")
             return (None if val is None else str(val), str(d.get("visible", "yes")).lower(),
                     float(conf) if isinstance(conf, (int, float)) else None)
-        except (ValueError, TypeError):
-            pass
+        except (ValueError, TypeError, AttributeError):
+            raise MalformedAnswer(f"unparseable JSON answer: {text[:80]!r}") from None
+    if "{" in text:
+        raise MalformedAnswer(f"truncated JSON answer: {text[:80]!r}")
     # Not JSON: treat the whole reply as the value, confidence unknown.
     t = text.strip().strip("`").strip()
     return (t or None, "yes" if t else "no", None)
 
 
-def _classify(value: str | None, visible: str, spec: dict) -> str:
+def _classify(a: "Attempt", spec: dict, cfg: dict) -> tuple[str, str]:
+    """(status, reason) for one answer."""
+    value, visible = a.value, a.visible
     if value is None or visible == "no":
-        return "not_found"
+        return "not_found", ""
     if spec.get("allow_partial") and (visible == "partly" or "..." in value):
-        return "partial"
+        return "partial", ""
     pattern = spec.get("pattern")
     if pattern and not re.match(pattern, value):
-        return "needs_review"
-    return READABLE
+        return "needs_review", "format"
+    if visible == "partly":
+        # A code read from partly hidden characters: accept only when the
+        # model is confident, otherwise it is an inference -> review.
+        floor = float(spec.get("partial_min_confidence", cfg.get("partial_min_confidence", 0.8)))
+        if a.confidence is None or a.confidence < floor:
+            return "needs_review", f"partly visible, confidence {a.confidence}"
+        return READABLE, f"partly visible, confidence {a.confidence}"
+    return READABLE, ""
 
 
 def _attempt(client: VLMClient, image: Image.Image, crop_name: str, region: list[float],
@@ -396,7 +413,11 @@ def _attempt(client: VLMClient, image: Image.Image, crop_name: str, region: list
     except Exception as exc:  # noqa: BLE001
         return Attempt(crop_name, region, None, "error", None, "", time.monotonic() - t,
                        error=f"{type(exc).__name__}: {exc}", evidence=ev)
-    value, visible, conf = parse_answer(raw)
+    try:
+        value, visible, conf = parse_answer(raw)
+    except MalformedAnswer as exc:
+        return Attempt(crop_name, region, None, "error", None, raw, round(time.monotonic() - t, 2),
+                       error=str(exc), evidence=ev)
     return Attempt(crop_name, region, normalize(value, spec.get("normalize")), visible, conf,
                    raw, round(time.monotonic() - t, 2), evidence=ev)
 
@@ -411,6 +432,7 @@ def read_field(client: VLMClient, image: Image.Image, name: str, spec: dict, cfg
     with "verify", reads once more on a different crop and compares."""
     attempts: list[Attempt] = []
     best: tuple[Attempt, str] | None = None
+    why = ""
     plan = crop_plan(spec, cfg)
     for crop_name, region in plan:
         a = _attempt(client, image, crop_name, region, spec, cfg, evidence_dir, name,
@@ -418,12 +440,15 @@ def read_field(client: VLMClient, image: Image.Image, name: str, spec: dict, cfg
         attempts.append(a)
         if a.error:
             continue  # technical failure: try the next crop, decide below
-        st = _classify(a.value, a.visible, spec)
+        st, reason = _classify(a, spec, cfg)
         if st in (READABLE, "partial"):
-            best = (a, st)
+            best, why = (a, st), reason
+            break
+        if st == "needs_review" and reason != "format":
+            best, why = (a, st), reason  # seen but uncertain: other crops show the same hidden text
             break
         if st == "needs_review" and best is None:
-            best = (a, st)  # keep looking for a clean read, remember this one
+            best, why = (a, st), "value fails the field format"  # keep looking for a clean read
 
     secs = round(sum(a.seconds for a in attempts), 2)
     if best is None:
@@ -439,7 +464,7 @@ def read_field(client: VLMClient, image: Image.Image, name: str, spec: dict, cfg
 
     a, st = best
     res = FieldResult(a.value, st, a.confidence, a.raw, secs, source=a.crop, image_value=a.value,
-                      evidence=a.evidence, attempts=attempts)
+                      note=why, evidence=a.evidence, attempts=attempts)
 
     if spec.get("verify") and st == READABLE:
         other = next(((n, r) for n, r in plan if n != a.crop), None)
@@ -620,6 +645,11 @@ CREATE TABLE IF NOT EXISTS specimen_labels (
 
 
 def ensure_label_table(conn: sqlite3.Connection) -> None:
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(specimen_labels)").fetchall()}
+    if cols and "node_id" not in cols:
+        # First version keyed rows by (run, file) only; the primary key cannot be
+        # altered in place, so keep the old rows aside and start the new table.
+        conn.execute("ALTER TABLE specimen_labels RENAME TO specimen_labels_v1")
     conn.execute(SQL_SCHEMA)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_specimen_labels_run ON specimen_labels(run_id)")
 

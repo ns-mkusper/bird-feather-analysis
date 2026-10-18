@@ -241,3 +241,44 @@ def test_sqlite_keeps_one_row_per_node(tmp_path):
     lx.upsert_labels(conn, [r], "run1", node_id="node-2")
     rows = conn.execute("select node_id, sex from specimen_labels order by node_id").fetchall()
     assert rows == [("node-1", "F"), ("node-2", "F")]
+
+
+def test_sqlite_migrates_first_version_table(tmp_path):
+    import sqlite3
+    db = tmp_path / "old.sqlite3"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE specimen_labels (run_id TEXT, file_id TEXT, sex TEXT, PRIMARY KEY (run_id, file_id))")
+    conn.execute("INSERT INTO specimen_labels VALUES ('r', 'a.jpg', 'F')")
+    conn.commit()
+    r = lx.LabelResult("a.jpg", node="n1")
+    r.fields["sex"] = lx.FieldResult("M", "readable")
+    lx.upsert_labels(conn, [r], "r")
+    assert conn.execute("select node_id, sex from specimen_labels").fetchall() == [("n1", "M")]
+    assert conn.execute("select sex from specimen_labels_v1").fetchall() == [("F",)]
+
+
+def test_malformed_answer_is_a_technical_failure_and_next_crop_is_tried(img):
+    cfg = lx.load_config()
+    spec = cfg["fields"]["sex"]
+    degenerate = '{"value": "na' + " " * 60          # truncated, never closes
+    f = lx.read_field(FakeClient([degenerate, _ans("F")]), img, "sex", spec, cfg)
+    assert (f.value, f.status, f.source) == ("F", "readable", "expanded")
+    assert "truncated JSON" in f.attempts[0].error
+    n = len(lx.crop_plan(spec, cfg))
+    f = lx.read_field(FakeClient([degenerate] * n), img, "sex", spec, cfg)
+    assert f.status == "model_error"
+
+
+def test_partly_visible_code_needs_confidence(img):
+    cfg = lx.load_config()
+    spec = cfg["fields"]["sex"]
+    f = lx.read_field(FakeClient([_ans("F", "partly", 0.6)]), img, "sex", spec, cfg)
+    assert f.status == "needs_review" and "partly visible" in f.note and len(f.attempts) == 1
+    f = lx.read_field(FakeClient([_ans("M", "partly", 0.95)]), img, "sex", spec, cfg)
+    assert f.status == "readable" and "partly visible" in f.note
+
+
+def test_feather_crops_stay_below_the_label_row():
+    cfg = lx.load_config()
+    for name, reg in lx.crop_plan(cfg["fields"]["feather"], cfg):
+        assert reg[1] >= 0.15, (name, reg)
