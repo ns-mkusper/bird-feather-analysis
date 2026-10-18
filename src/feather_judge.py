@@ -29,7 +29,9 @@ def context_panel(slide_bgr: np.ndarray, mask: np.ndarray, crop_bgr: np.ndarray,
     ys, xs = np.nonzero(mask)
     x0, x1, y0, y1 = xs.min(), xs.max() + 1, ys.min(), ys.max() + 1
     m = cfg.get("context_margin_frac", 0.15)
-    mx, my = int((x1 - x0) * m) + 10, int((y1 - y0) * m) + 10
+    # margin from the feather's longer side, so neighbours and cut-off parts are visible
+    pad = int(max(x1 - x0, y1 - y0) * m) + 10
+    mx, my = pad, pad
     x0, y0, x1, y1 = max(0, x0 - mx), max(0, y0 - my), min(w, x1 + mx), min(h, y1 + my)
     left = slide_bgr[y0:y1, x0:x1].copy()
     cnts, _ = cv2.findContours(mask[y0:y1, x0:x1].astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)

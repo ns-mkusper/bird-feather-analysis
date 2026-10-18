@@ -311,6 +311,17 @@ def attach_feathers_from_crops(results: list["LabelResult"], crops_dir: str | Pa
     n = 0
     dates = {r.file_id: result_date(r) for r in results}
     for r in results:
+        rec = Path(crops_dir) / "labels" / f"{Path(r.image).stem}.json"
+        if rec.exists():
+            # written by the pipeline itself: full feather records (scores, measurements)
+            try:
+                feathers = json.loads(rec.read_text()).get("feathers") or []
+            except ValueError:
+                feathers = []
+            if feathers:
+                r.feathers = feathers
+                n += 1
+                continue
         d = r.fields.get("date")
         crops = [str(p) for p in find_crops(crops_dir, r.file_id, d.value if d is not None else None)]
         if crops:
@@ -1076,6 +1087,31 @@ def run_distributed(chosen: list[str], out: Path, remote_output_dir: str | None 
         log(f"  TIMEOUT {Path(p).name}: still queued or running; rerun to collect it")
 
 
+def merge_feather_scores(results: list[LabelResult], scores_csv: str | Path) -> int:
+    """Adds judge_* / qc_image columns from a CSV keyed by crop file name (e.g.
+    scripts/judge_existing_crops.py output for crops made by older code)."""
+    from src.feather_judge import needs_review
+
+    with open(scores_csv, newline="") as fh:
+        by_crop = {row["crop"]: row for row in csv.DictReader(fh)}
+    n = 0
+    for r in results:
+        for f in r.feathers:
+            row = by_crop.get(f.get("crop"))
+            if not row:
+                continue
+            for k, v in row.items():
+                if k.startswith("judge_") or k == "qc_image":
+                    if v in ("True", "False"):
+                        v = v == "True"
+                    elif k == "judge_score" and v:
+                        v = float(v)
+                    f[k] = v if v != "" else None
+            f["needs_review"] = needs_review(f)
+            n += 1
+    return n
+
+
 def write_feathers_csv(results: list[LabelResult], path: Path, run_id: str = "") -> Path:
     """The per-feather output table (FEATHER_TABLE_COLS), one row per feather."""
     with open(path, "w", newline="") as fh:
@@ -1160,7 +1196,8 @@ def score_feather_counts(results: list[LabelResult], gold_csv: str | Path) -> di
 
 
 def finish_run(out: Path, chosen: list[str], cfg: dict, gold: str | Path | None = None,
-               segmentation_dir: str | Path | None = None, siblings: list[str] | None = None) -> dict:
+               segmentation_dir: str | Path | None = None, siblings: list[str] | None = None,
+               feather_scores: str | Path | None = None) -> dict:
     """Writes labels.csv, review.csv, feathers.csv, labels.sqlite3 and
     summary.json from out/labels.jsonl (the latest result per slide), with
     feather IDs from a segmentation output folder when given, and scores
@@ -1171,6 +1208,8 @@ def finish_run(out: Path, chosen: list[str], cfg: dict, gold: str | Path | None 
         attach_feathers_from_crops(results, segmentation_dir, siblings)
         from src import feather_duplicates
 
+        if feather_scores and Path(feather_scores).exists():
+            merge_feather_scores(results, feather_scores)
         dup_rows = feather_duplicates.apply_to_results(results, segmentation_dir)
         if dup_rows:
             feather_duplicates.write_csv(dup_rows, out / "feather_duplicates.csv")
@@ -1182,6 +1221,10 @@ def finish_run(out: Path, chosen: list[str], cfg: dict, gold: str | Path | None 
     summary["slides_with_feather_ids"] = sum(bool(r.feathers) for r in results)
     summary["feathers"] = sum(len(r.feathers) for r in results)
     summary["duplicate_feathers"] = sum(bool(f.get("duplicate_of")) for r in results for f in r.feathers)
+    scored = [f["judge_score"] for r in results for f in r.feathers if isinstance(f.get("judge_score"), float)]
+    summary["feathers_scored"] = len(scored)
+    summary["feather_score_mean"] = round(sum(scored) / len(scored), 2) if scored else None
+    summary["feathers_needing_review"] = sum(bool(f.get("needs_review")) for r in results for f in r.feathers)
     if gold and Path(gold).exists():
         summary["gold"] = score_against_gold(results, gold, cfg)
         summary["gold_feather_count"] = score_feather_counts(results, gold)
