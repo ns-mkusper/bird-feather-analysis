@@ -165,3 +165,79 @@ def test_gold_scoring(tmp_path):
     s = lx.score_against_gold([r, r2], gold)
     assert s["individual_id"]["wrong_value"] == 1 and s["individual_id"]["correct"] == 0
     assert s["date"]["n"] == 2 and s["date"]["correct"] == 1 and s["date"]["false_na"] == 1
+
+
+def test_feather_text_scoring(tmp_path):
+    gold = tmp_path / "g.csv"
+    gold.write_text("image,feather_text,feather_visibility\n"
+                    "a.jpg,RM-H pga SVFLU-bal,partial\nb.jpg,,none\nc.jpg,3. TERT,full\nd.jpg,FO,partial\ne.jpg,X,full\n")
+    def res(name, value, status):
+        r = lx.LabelResult(name)
+        r.fields["feather"] = lx.FieldResult(value, status)
+        return r
+    out = lx.score_text_field([
+        res("a.jpg", "RM-H pga SVFLU-bala...", "partial"),   # 1 extra char: fine, CER 1/18
+        res("b.jpg", "FOTO", "readable"),                    # invented
+        res("c.jpg", "3. TERT", "readable"),                 # exact
+        res("d.jpg", "FOTO; ISOTOP-PROV", "partial"),        # completing hidden text
+        res("e.jpg", None, "model_error"),                   # not scored
+    ], gold)
+    assert out["n"] == 4 and out["model_error"] == 1
+    assert out["invented_text"] == 1 and out["overreach"] == 1 and out["exact"] == 1
+    assert out["visibility_correct"] == 3 and out["text_vs_none_correct"] == 3
+    assert out["rows"][0]["cer"] == round(1 / 18, 3)
+
+
+def test_extract_for_pipeline_caches_and_redoes_errors(tmp_path, monkeypatch):
+    img = tmp_path / "A0012 1996-im1058.jpg"
+    Image.new("RGB", (400, 460), "white").save(img)
+    cfg = lx.load_config()
+    n_fields = len(lx.FIELDS_ORDER)
+
+    calls = {"n": 0}
+    def fake_extract(path, cfg_, client, fields=None, evidence_dir=None):
+        calls["n"] += 1
+        r = lx.LabelResult(str(path), filename=lx.parse_filename(Path(path).name))
+        status = "model_error" if calls["n"] == 1 else "readable"
+        for f in lx.FIELDS_ORDER:
+            r.fields[f] = lx.FieldResult("X" if status == "readable" else None, status)
+        return r
+    monkeypatch.setattr(lx, "extract", fake_extract)
+    r1 = lx.extract_for_pipeline(img, tmp_path / "out", client=None, cfg=cfg)
+    assert r1.has_model_error and (tmp_path / "out" / "labels" / f"{img.stem}.json").exists()
+    r2 = lx.extract_for_pipeline(img, tmp_path / "out", client=None, cfg=cfg)   # error -> redone
+    r3 = lx.extract_for_pipeline(img, tmp_path / "out", client=None, cfg=cfg)   # finished -> cached
+    assert calls["n"] == 2 and not r2.has_model_error and r3.fields["sex"].value == "X"
+
+    def boom(*a, **k):
+        raise OSError("disk")
+    monkeypatch.setattr(lx, "extract", boom)
+    r4 = lx.extract_for_pipeline(img, tmp_path / "out2", client=None, cfg=cfg)
+    assert all(f.status == "model_error" for f in r4.fields.values()) and len(r4.fields) == n_fields
+    assert r4.row()["sex"] == ""          # crash is blank, never N/A
+    m = lx.label_metrics(r4)
+    assert m["labels_model_error"] == 1 and m["labels_sex_model_error"] == 1
+
+
+def test_mlx_local_client_strips_thinking():
+    seen = {}
+    def gen(model, processor, prompt, image, max_tokens):
+        seen["image"], seen["prompt"] = image[0], prompt
+        class Out:
+            text = '<think>hmm</think>{"value": "F", "visible": "yes", "confidence": 0.9}'
+        return Out()
+    c = lx.MLXLocalClient(gen, "m", "p", lambda s: "CHAT:" + s, "qwen")
+    out = c.ask(Image.new("RGB", (10, 10)), "read it")
+    assert out.strip().startswith("{") and seen["prompt"] == "CHAT:read it" and seen["image"].endswith(".jpg")
+
+
+def test_sqlite_keeps_one_row_per_node(tmp_path):
+    import sqlite3
+    r = lx.LabelResult("A0012 1996-im1058.jpg", node="node-1")
+    r.fields["sex"] = lx.FieldResult("F", "readable")
+    conn = sqlite3.connect(tmp_path / "s.sqlite3")
+    lx.upsert_labels(conn, [r], "run1")
+    lx.upsert_labels(conn, [r], "run1")
+    lx.upsert_labels(conn, [r], "run1", node_id="node-2")
+    rows = conn.execute("select node_id, sex from specimen_labels order by node_id").fetchall()
+    assert rows == [("node-1", "F"), ("node-2", "F")]

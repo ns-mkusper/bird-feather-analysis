@@ -9,6 +9,7 @@ from glob import glob
 
 import redis
 
+from src import label_extract as lx
 from src.feather_processing import FeatherProcessor
 
 
@@ -101,8 +102,23 @@ def _init_stats_db(db_path: str) -> sqlite3.Connection:
     if "vlm_notes" not in existing_cols:
         conn.execute("ALTER TABLE image_stats ADD COLUMN vlm_notes TEXT")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_image_stats_run ON image_stats(run_id)")
+    # Specimen label table lives next to image_stats (one row per run/node/slide).
+    lx.ensure_label_table(conn)
     conn.commit()
     return conn
+
+
+def _emit_labels(client: redis.Redis | None, run_id: str, node_id: str, counters: dict[str, int]) -> None:
+    if client is None or not counters:
+        return
+    try:
+        pipe = client.pipeline()
+        for key in (f"feather:run:{run_id}:totals", f"feather:run:{run_id}:node:{node_id}"):
+            for name, val in counters.items():
+                pipe.hincrby(key, name, int(val))
+        pipe.execute()
+    except Exception as exc:  # noqa: BLE001
+        print(f"metrics label emit failed: {exc}")
 
 
 def _upsert_stats_row(conn: sqlite3.Connection, row: dict) -> None:
@@ -436,6 +452,15 @@ def run_shard(
         )
 
     for idx, path in enumerate(selected, start=1):
+        # Label table from the original slide, before (and independent of) segmentation.
+        labels = processor.extract_labels(path, output_dir)
+        if labels is not None:
+            lx.upsert_labels(stats_conn, [labels], run_id, node_id=node_id)
+            label_counters = lx.label_metrics(labels)
+            for name, val in label_counters.items():
+                local_state[name] = int(local_state.get(name, 0)) + val
+            local_state["labels_seconds_sum"] = float(local_state.get("labels_seconds_sum", 0.0)) + labels.seconds
+            _emit_labels(metrics_redis, run_id, node_id, label_counters)
         t0 = time.perf_counter()
         result = processor.process_image(path, output_dir, profile="default")
         retry_used = False
@@ -525,6 +550,7 @@ def run_shard(
                 "retry_used": retry_used,
                 "retry_selected": retry_selected,
                 "profile_selected": result.processing_profile,
+                "labels": None if labels is None else {n: f.status for n, f in labels.fields.items()},
             },
         )
         _upsert_stats_row(

@@ -84,6 +84,12 @@ class FeatherProcessor:
         self.vlm_metadata_enabled = os.getenv("FEATHER_ENABLE_VLM_METADATA", "1") == "1"
         self.vlm_model_id = os.getenv("FEATHER_VLM_MODEL", DEFAULT_VLM_MODEL)
         self.vlm_config = None
+        # Specimen label table (src/label_extract.py): read from the original
+        # slide before segmentation, independent of it. FEATHER_LABEL_VLM:
+        # auto/local reuse this worker's MLX model when loaded, else the VLM
+        # server (FEATHER_VLM_ENDPOINTS); server always uses the server.
+        self.labels_enabled = os.getenv("FEATHER_ENABLE_LABELS", "1") == "1"
+        self._label_client = None
         # Keep VLM opt-in so workers avoid expensive startup unless explicitly enabled.
         if os.getenv("FEATHER_ENABLE_VLM", "1") == "1":
             try:
@@ -176,6 +182,32 @@ class FeatherProcessor:
         except Exception as exc:  # noqa: BLE001
             logging.warning("VLM judge failed for %s: %s", image_path, exc)
             return out
+
+    def label_client(self):
+        if self._label_client is None:
+            from src import label_extract as lx
+
+            mode = os.getenv("FEATHER_LABEL_VLM", "auto")
+            if mode in ("auto", "local") and self.has_vlm:
+                self._label_client = lx.MLXLocalClient(self.vlm_generate, self.vlm_model, self.vlm_processor,
+                                                       self._chat_prompt, self.vlm_model_id)
+            else:
+                self._label_client = lx.VLMClient(lx.load_config()["vlm"])
+        return self._label_client
+
+    def extract_labels(self, image_path: str, output_dir: str):
+        """Specimen label fields for one slide, or None when disabled. Never
+        raises: a crash comes back as model_error fields so segmentation
+        still runs and the slide is retried later, not exported as N/A."""
+        if not self.labels_enabled:
+            return None
+        from src import label_extract as lx
+
+        try:
+            return lx.extract_for_pipeline(image_path, output_dir, self.label_client())
+        except Exception as exc:  # noqa: BLE001
+            logging.exception("Label extraction failed for %s", image_path)
+            return lx.failed_result(image_path, exc)
 
     def _chat_prompt(self, instruction: str) -> str:
         from mlx_vlm.prompt_utils import apply_chat_template

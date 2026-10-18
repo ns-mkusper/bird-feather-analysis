@@ -49,8 +49,10 @@ import json
 import os
 import random
 import re
+import socket
 import sqlite3
 import sys
+import tempfile
 import time
 import urllib.request
 from collections import Counter, defaultdict
@@ -112,6 +114,8 @@ class LabelResult:
     filename: dict = field(default_factory=dict)
     seconds: float = 0.0
     extracted_at: str = ""
+    node: str = ""
+    model: str = ""
 
     @property
     def file_id(self) -> str:
@@ -165,6 +169,7 @@ class LabelResult:
     def to_json(self) -> dict:
         d = {"file_id": self.file_id, "image": self.image, "extracted_at": self.extracted_at,
              "extractor": EXTRACTOR_VERSION, "seconds": round(self.seconds, 2),
+             "node": self.node, "model": self.model,
              "filename": self.filename, "needs_review": self.needs_review,
              "fields": {k: asdict(v) for k, v in self.fields.items()}}
         d["date_parts"] = {k: {"value": v, "status": s} for k, (v, s) in self.date_parts().items()}
@@ -173,7 +178,7 @@ class LabelResult:
     @classmethod
     def from_json(cls, d: dict) -> "LabelResult":
         r = cls(d["image"], filename=d.get("filename", {}), seconds=d.get("seconds", 0),
-                extracted_at=d.get("extracted_at", ""))
+                extracted_at=d.get("extracted_at", ""), node=d.get("node", ""), model=d.get("model", ""))
         for k, v in d.get("fields", {}).items():
             atts = [Attempt(**a) for a in v.pop("attempts", [])]
             r.fields[k] = FieldResult(**v, attempts=atts)
@@ -273,6 +278,7 @@ class VLMClient:
         env = [e.strip() for e in os.getenv("FEATHER_VLM_ENDPOINTS", "").split(",") if e.strip()]
         self._endpoints = cycle(env or cfg["endpoints"])
         self._lock = Lock()
+        self.model_name = cfg["model"]
         self.retries = int(cfg.get("retries", 2))
         self.timeout = float(cfg.get("timeout", 180))
 
@@ -307,6 +313,25 @@ class VLMClient:
                     time.sleep(3 * (i + 1))
         assert last is not None
         raise last
+
+
+class MLXLocalClient:
+    """Same interface as VLMClient, but runs on a worker's already-loaded MLX
+    model (FeatherProcessor), so a cluster run does not funnel every label
+    request through one VLM server and loads no second copy of the model."""
+
+    def __init__(self, generate, model, processor, chat_prompt, model_name: str, max_tokens: int = 120):
+        self.generate, self.model, self.processor = generate, model, processor
+        self.chat_prompt, self.model_name, self.max_tokens = chat_prompt, model_name, max_tokens
+        self._lock = Lock()  # one MLX generation at a time per process
+
+    def ask(self, image: Image.Image, prompt: str, timeout: float | None = None) -> str:
+        with self._lock, tempfile.NamedTemporaryFile(suffix=".jpg") as tmp:
+            image.save(tmp.name, "JPEG", quality=92)
+            out = self.generate(self.model, self.processor, prompt=self.chat_prompt(prompt),
+                                image=[tmp.name], max_tokens=self.max_tokens)
+        text = getattr(out, "text", str(out))
+        return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
 
 
 def normalize(value: str | None, how: str | None) -> str | None:
@@ -480,7 +505,58 @@ def extract(image_path: str | Path, cfg: dict | None = None, client: VLMClient |
             result.fields[name] = read_field(client, image, name, spec, cfg, ev_dir)
     apply_filename(result, cfg)
     result.seconds = time.monotonic() - t0
+    result.model = getattr(client, "model_name", "")
+    result.node = socket.gethostname()
     return result
+
+
+def failed_result(image_path: str | Path, exc: BaseException, fields: list[str] | None = None) -> LabelResult:
+    """A crash outside the per-field handling (bad image, worker bug): every
+    field is model_error, so the slide is retried, never exported as N/A."""
+    r = LabelResult(str(image_path), filename=parse_filename(Path(image_path).name),
+                    extracted_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                    node=socket.gethostname())
+    for name in fields or FIELDS_ORDER:
+        r.fields[name] = FieldResult(None, "model_error", raw=f"{type(exc).__name__}: {exc}",
+                                     note="label extraction crashed")
+    return r
+
+
+def extract_for_pipeline(image_path: str | Path, output_dir: str | Path, client,
+                         cfg: dict | None = None) -> LabelResult:
+    """Pipeline entry point (workers): one result per slide and output dir,
+    cached as <output_dir>/labels/<stem>.json with evidence crops next to it.
+    A task retry or rerun reuses a finished result instead of asking the model
+    again; results with a model_error are redone."""
+    label_dir = Path(output_dir) / "labels"
+    cache = label_dir / f"{Path(image_path).stem}.json"
+    if cache.exists():
+        try:
+            d = json.loads(cache.read_text())
+            r = LabelResult.from_json(d)
+            if d.get("extractor") == EXTRACTOR_VERSION and not r.has_model_error:
+                return r
+        except (ValueError, TypeError, KeyError):
+            pass
+    try:
+        r = extract(image_path, cfg, client, evidence_dir=label_dir / "evidence")
+    except Exception as exc:  # noqa: BLE001
+        r = failed_result(image_path, exc)
+    label_dir.mkdir(parents=True, exist_ok=True)
+    tmp = cache.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(r.to_json()))
+    tmp.replace(cache)
+    return r
+
+
+def label_metrics(r: LabelResult) -> dict[str, int]:
+    """Counters for the run monitors (local state JSON, Redis). Technical
+    failures and true absences are separate counters, never one 'missing'."""
+    m = {"labels_done": 1, "labels_needs_review": int(r.needs_review),
+         "labels_model_error": int(r.has_model_error)}
+    for name, f in r.fields.items():
+        m[f"labels_{name}_{f.status}"] = 1
+    return m
 
 
 def field_crops(image_path: str | Path, cfg: dict | None = None) -> dict[str, Image.Image]:
@@ -523,6 +599,7 @@ def write_review_csv(results: list[LabelResult], path: Path) -> Path:
 SQL_SCHEMA = """
 CREATE TABLE IF NOT EXISTS specimen_labels (
     run_id TEXT NOT NULL,
+    node_id TEXT NOT NULL,
     file_id TEXT NOT NULL,
     image_path TEXT,
     extracted_at TEXT,
@@ -538,17 +615,23 @@ CREATE TABLE IF NOT EXISTS specimen_labels (
     year TEXT, month TEXT, day TEXT, date_status TEXT, date_source TEXT,
     seconds REAL,
     detail_json TEXT,
-    PRIMARY KEY (run_id, file_id)
+    PRIMARY KEY (run_id, node_id, file_id)
 )"""
 
 
-def write_sqlite(results: list[LabelResult], path: Path, run_id: str, model: str) -> Path:
-    """One row per slide and run; rerunning upserts, never duplicates."""
-    conn = sqlite3.connect(path)
+def ensure_label_table(conn: sqlite3.Connection) -> None:
     conn.execute(SQL_SCHEMA)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_specimen_labels_run ON specimen_labels(run_id)")
+
+
+def upsert_labels(conn: sqlite3.Connection, results: list[LabelResult], run_id: str,
+                  model: str = "", node_id: str | None = None) -> None:
+    """One row per (run, node, slide); rerunning replaces the row, never duplicates."""
+    ensure_label_table(conn)
     for r in results:
-        row = {"run_id": run_id, "file_id": r.file_id, "image_path": r.image,
-               "extracted_at": r.extracted_at, "extractor": EXTRACTOR_VERSION, "model": model,
+        row = {"run_id": run_id, "node_id": node_id or r.node or socket.gethostname(),
+               "file_id": r.file_id, "image_path": r.image,
+               "extracted_at": r.extracted_at, "extractor": EXTRACTOR_VERSION, "model": r.model or model,
                "needs_review": int(r.needs_review), "filename_id": r.filename.get("id"),
                "filename_year": r.filename.get("year"), "filename_parse": r.filename.get("parse"),
                "seconds": round(r.seconds, 2), "detail_json": json.dumps(r.to_json())}
@@ -566,7 +649,14 @@ def write_sqlite(results: list[LabelResult], path: Path, run_id: str, model: str
         conn.execute(f"INSERT OR REPLACE INTO specimen_labels ({','.join(cols)}) "
                      f"VALUES ({','.join('?' * len(cols))})", [row[c] for c in cols])
     conn.commit()
-    conn.close()
+
+
+def write_sqlite(results: list[LabelResult], path: Path, run_id: str, model: str) -> Path:
+    conn = sqlite3.connect(path, timeout=30)
+    try:
+        upsert_labels(conn, results, run_id, model)
+    finally:
+        conn.close()
     return path
 
 
@@ -632,6 +722,79 @@ def score_against_gold(results: list[LabelResult], gold_csv: str | Path,
     for s in stats.values():
         s["accuracy"] = round(s["correct"] / s["n"], 3) if s["n"] else None
     return stats
+
+
+def _levenshtein(a: str, b: str) -> int:
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
+        prev = cur
+    return prev[-1]
+
+
+def _norm_text(t: str | None) -> str:
+    t = (t or "").replace("…", " ").replace("...", " ")
+    return re.sub(r"\s+", " ", t).strip().upper()
+
+
+VISIBILITY_OF_STATUS = {READABLE: "full", "partial": "partial", "not_found": "none"}
+
+
+def score_text_field(results: list[LabelResult], gold_csv: str | Path, name: str = "feather") -> dict:
+    """Free-text field scoring (the feather line), separate from exact match.
+    Gold columns: <name>_text (only the characters actually visible) and
+    <name>_visibility (full / partial / none).
+      visibility      3-class accuracy (full/partial/none) and 2-class (text vs none)
+      cer             character error rate vs the visible gold text (case-insensitive)
+      invented_text   model returned text where none is visible
+      overreach       model returned >2 more characters than are visible on a
+                      partial line (completing hidden text)
+    model_error slides are counted apart, not scored."""
+    gold = {}
+    with open(gold_csv, newline="") as fh:
+        for row in csv.DictReader(fh):
+            if (row.get(f"{name}_visibility") or "").strip():
+                gold[row.get("image") or row.get("file_id")] = row
+    out = {"n": 0, "model_error": 0, "visibility_correct": 0, "text_vs_none_correct": 0,
+           "with_text": 0, "cer_sum": 0.0, "exact": 0, "invented_text": 0, "overreach": 0,
+           "confusion": Counter(), "rows": []}
+    for r in results:
+        g = gold.get(r.file_id)
+        f = r.fields.get(name)
+        if not g or f is None:
+            continue
+        if f.status == "model_error":
+            out["model_error"] += 1
+            continue
+        want_vis = g[f"{name}_visibility"].strip()
+        want = _norm_text(g.get(f"{name}_text"))
+        got = _norm_text(f.value) if f.status != "filename_fallback" else ""
+        got_vis = VISIBILITY_OF_STATUS.get(f.status, "full" if got else "none")
+        out["n"] += 1
+        out["confusion"][f"{want_vis}->{got_vis}"] += 1
+        out["visibility_correct"] += want_vis == got_vis
+        out["text_vs_none_correct"] += (want_vis == "none") == (got_vis == "none")
+        cer = None
+        if want:
+            out["with_text"] += 1
+            cer = min(1.0, _levenshtein(got, want) / len(want))
+            out["cer_sum"] += cer
+            out["exact"] += got == want
+            if want_vis == "partial" and len(got) > len(want) + 2:
+                out["overreach"] += 1
+        elif got:
+            out["invented_text"] += 1
+        out["rows"].append({"file_id": r.file_id, "gold": want, "gold_visibility": want_vis,
+                            "got": got, "got_visibility": got_vis, "status": f.status,
+                            "cer": None if cer is None else round(cer, 3)})
+    n, k = out["n"], out["with_text"]
+    out["visibility_accuracy"] = round(out["visibility_correct"] / n, 3) if n else None
+    out["text_vs_none_accuracy"] = round(out["text_vs_none_correct"] / n, 3) if n else None
+    out["mean_cer"] = round(out["cer_sum"] / k, 3) if k else None
+    out["confusion"] = dict(out["confusion"])
+    return out
 
 
 # ---------------------------------------------------------------- selection / CLI
@@ -703,6 +866,126 @@ def load_previous(jsonl: Path) -> dict[str, LabelResult]:
     return done
 
 
+def _append_result(jsonl: Path, r: LabelResult, lock: Lock) -> None:
+    with lock, open(jsonl, "a") as fh:
+        fh.write(json.dumps(r.to_json()) + "\n")
+
+
+def _log_result(r: LabelResult, log=print) -> None:
+    flag = " REVIEW" if r.needs_review else ""
+    log(f"  {r.file_id} ({r.seconds:.0f}s{', ' + r.node if r.node else ''}): "
+        + ", ".join(f"{k}={v.value!r}/{v.status}" for k, v in r.fields.items()) + flag)
+
+
+def pending_images(chosen: list[str], out: Path) -> list[str]:
+    """Slides in `chosen` without a finished result in out/labels.jsonl
+    (missing, or with a model_error): what a resumed run still has to do."""
+    previous = load_previous(out / "labels.jsonl")
+    return [p for p in chosen if Path(p).name not in previous or previous[Path(p).name].has_model_error]
+
+
+def run_local(chosen: list[str], out: Path, cfg: dict, fields: list[str] | None = None,
+              workers: int = 2, log=print) -> None:
+    """Reads labels from this machine: slides are copied from the head node
+    into data/raw_cache, the model is the VLM server (FEATHER_VLM_ENDPOINTS)."""
+    from src.notebook_remote_runtime import RemoteClusterIO, load_notebook_config_from_env
+
+    rc = load_notebook_config_from_env()
+    io_ = RemoteClusterIO(rc)
+    client = VLMClient(cfg["vlm"])
+    cache = REPO / "data" / "raw_cache"
+    out.mkdir(parents=True, exist_ok=True)
+    lock = Lock()
+
+    def one(p: str) -> None:
+        local = Path(p) if Path(p).exists() else cache / Path(p).name
+        if not local.exists():
+            part = cache / ".part"
+            io_.fetch_remote_file(rc.head_host, p, part)
+            (part / Path(p).name).replace(local)
+        try:
+            r = extract(local, cfg, client, fields, evidence_dir=out / "evidence")
+        except Exception as exc:  # noqa: BLE001
+            r = failed_result(local, exc, fields)
+        _append_result(out / "labels.jsonl", r, lock)
+        _log_result(r, log)
+
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        list(pool.map(one, chosen))
+
+
+def run_distributed(chosen: list[str], out: Path, remote_output_dir: str | None = None,
+                    timeout: float = 3600, log=print, app=None) -> None:
+    """Sends one src.celery_tasks.extract_labels task per slide to the cluster
+    workers (image paths as seen on the nodes) and collects the results through
+    the Celery result backend. Workers keep their evidence crops under
+    <remote_output_dir>/labels/evidence/."""
+    from src.notebook_remote_runtime import (RemoteClusterIO, assert_tcp_reachable, create_celery_client,
+                                             load_notebook_config_from_env)
+
+    if app is None:
+        rc = load_notebook_config_from_env()
+        assert_tcp_reachable(rc.broker_url, "Broker")
+        app = create_celery_client(rc)
+        if remote_output_dir is None:
+            remote_output_dir = RemoteClusterIO(rc).remote_runtime_path(
+                f"{rc.remote_repo_dir}/data/runs/labels-{out.name}/processed")
+    out.mkdir(parents=True, exist_ok=True)
+    lock = Lock()
+    pending = {app.send_task("src.celery_tasks.extract_labels", args=[p, remote_output_dir]): p for p in chosen}
+    log(f"sent {len(pending)} label tasks to the workers -> {remote_output_dir}")
+    deadline = time.time() + timeout
+    while pending and time.time() < deadline:
+        for res in list(pending):
+            if not res.ready():
+                continue
+            p = pending.pop(res)
+            try:
+                r = LabelResult.from_json(res.get(timeout=10))
+            except Exception as exc:  # noqa: BLE001  (task failed after its retries)
+                r = failed_result(p, exc)
+            _append_result(out / "labels.jsonl", r, lock)
+            _log_result(r, log)
+        time.sleep(1)
+    for p in pending.values():
+        log(f"  TIMEOUT {Path(p).name}: still queued or running; rerun to collect it")
+
+
+def finish_run(out: Path, chosen: list[str], cfg: dict, gold: str | Path | None = None) -> dict:
+    """Writes labels.csv, review.csv, labels.sqlite3 and summary.json from
+    out/labels.jsonl (the latest result per slide) and scores against gold."""
+    final = load_previous(out / "labels.jsonl")
+    results = [final[Path(p).name] for p in chosen if Path(p).name in final]
+    write_csv(results, out / "labels.csv")
+    write_review_csv(results, out / "review.csv")
+    write_sqlite(results, out / "labels.sqlite3", out.name, cfg["vlm"]["model"])
+    summary = summarize(results)
+    if gold and Path(gold).exists():
+        summary["gold"] = score_against_gold(results, gold, cfg)
+        summary["gold_feather_text"] = score_text_field(results, gold, "feather")
+    (out / "summary.json").write_text(json.dumps(summary, indent=2))
+    return summary
+
+
+def print_summary(summary: dict, out: Path | None = None, log=print) -> None:
+    if out is not None:
+        log(f"wrote {out}/labels.csv, review.csv, labels.jsonl, labels.sqlite3, summary.json")
+    log(f"{summary['slides']} slides, {summary['needs_review']} need review, "
+        f"{summary['slides_with_model_error']} with model errors, "
+        f"{summary['mean_seconds_per_slide']} s per slide")
+    for name, counts in summary["status_counts"].items():
+        log(f"  {name:14} " + "  ".join(f"{k}={v}" for k, v in sorted(counts.items())))
+    if "gold" in summary:
+        log("gold (exact match):")
+        for name, s in summary["gold"].items():
+            log(f"  {name:14} {s['correct']}/{s['n']}  acc={s['accuracy']}  "
+                f"wrong_value={s['wrong_value']}  false_na={s['false_na']}")
+        t = summary["gold_feather_text"]
+        log(f"feather text: visibility {t['visibility_correct']}/{t['n']} ({t['visibility_accuracy']}), "
+            f"text-vs-none {t['text_vs_none_accuracy']}, mean CER {t['mean_cer']} on {t['with_text']} lines, "
+            f"exact {t['exact']}, invented {t['invented_text']}, overreach {t['overreach']}")
+
+
 def main(argv: list[str] | None = None) -> int:
     from src.notebook_remote_runtime import RemoteClusterIO, load_notebook_config_from_env
 
@@ -716,16 +999,17 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--all", action="store_true")
     ap.add_argument("--fields", help="comma-separated subset of fields")
     ap.add_argument("--config", default=str(DEFAULT_CONFIG))
-    ap.add_argument("--workers", type=int, default=2, help="images in flight at once")
+    ap.add_argument("--workers", type=int, default=2, help="images in flight at once (local mode)")
+    ap.add_argument("--distributed", action="store_true",
+                    help="run on the cluster workers (Celery task extract_labels) instead of from here")
+    ap.add_argument("--timeout", type=float, default=3600, help="seconds to wait for the workers")
     ap.add_argument("--out", default=None, help="output dir (default data/label_runs/<timestamp>)")
     ap.add_argument("--gold", default=None, help="hand-labelled CSV to score against")
     args = ap.parse_args(argv)
 
     cfg = load_config(args.config)
-    client = VLMClient(cfg["vlm"])
     rc = load_notebook_config_from_env()
-    io_ = RemoteClusterIO(rc)
-    chosen = _select(io_.list_remote_images(), args)
+    chosen = _select(RemoteClusterIO(rc).list_remote_images(), args)
     if args.write_manifest:
         Path(args.write_manifest).write_text("\n".join(Path(p).name for p in chosen) + "\n")
         print(f"wrote {len(chosen)} names to {args.write_manifest}")
@@ -733,54 +1017,15 @@ def main(argv: list[str] | None = None) -> int:
 
     out = Path(args.out or REPO / "data" / "label_runs" / datetime.now().strftime("%Y%m%d-%H%M%S"))
     out.mkdir(parents=True, exist_ok=True)
-    run_id = out.name
-    jsonl = out / "labels.jsonl"
-    previous = load_previous(jsonl)
-    todo = [p for p in chosen if Path(p).name not in previous or previous[Path(p).name].has_model_error]
-    fields = args.fields.split(",") if args.fields else None
-    cache = REPO / "data" / "raw_cache"
-    print(f"{len(chosen)} slides -> {out}  ({len(chosen) - len(todo)} already done, {len(todo)} to run)")
     (out / "config_used.json").write_text(json.dumps(cfg, indent=2))
-    write_lock = Lock()
-
-    def one(p: str) -> LabelResult:
-        local = cache / Path(p).name
-        if not local.exists():
-            part = cache / ".part"
-            io_.fetch_remote_file(rc.head_host, p, part)
-            (part / Path(p).name).replace(local)
-        r = extract(local, cfg, client, fields, evidence_dir=out / "evidence")
-        with write_lock:
-            with open(jsonl, "a") as fh:
-                fh.write(json.dumps(r.to_json()) + "\n")
-        flag = " REVIEW" if r.needs_review else ""
-        print(f"  {local.name} ({r.seconds:.0f}s): "
-              + ", ".join(f"{k}={v.value!r}/{v.status}" for k, v in r.fields.items()) + flag, flush=True)
-        return r
-
-    with ThreadPoolExecutor(max_workers=max(1, args.workers)) as pool:
-        list(pool.map(one, todo))
-
-    final = load_previous(jsonl)
-    results = [final[Path(p).name] for p in chosen if Path(p).name in final]
-    write_csv(results, out / "labels.csv")
-    write_review_csv(results, out / "review.csv")
-    write_sqlite(results, out / "labels.sqlite3", run_id, cfg["vlm"]["model"])
-    summary = summarize(results)
-    if args.gold:
-        score = score_against_gold(results, args.gold, cfg)
-        summary["gold"] = {k: {kk: vv for kk, vv in v.items()} for k, v in score.items()}
-    (out / "summary.json").write_text(json.dumps(summary, indent=2))
-    print(f"wrote {out}/labels.csv, review.csv, labels.jsonl, labels.sqlite3, summary.json  "
-          f"({summary['needs_review']} slides need review, "
-          f"{summary['slides_with_model_error']} with model errors)")
-    for name, counts in summary["status_counts"].items():
-        print(f"  {name:14} " + "  ".join(f"{k}={v}" for k, v in sorted(counts.items())))
-    if args.gold:
-        print("gold:")
-        for name, s in summary["gold"].items():
-            print(f"  {name:14} {s['correct']}/{s['n']}  acc={s['accuracy']}  "
-                  f"wrong_value={s['wrong_value']}  false_na={s['false_na']}")
+    todo = pending_images(chosen, out)
+    print(f"{len(chosen)} slides -> {out}  ({len(chosen) - len(todo)} already done, {len(todo)} to run)",
+          flush=True)
+    if args.distributed:
+        run_distributed(todo, out, timeout=args.timeout)
+    else:
+        run_local(todo, out, cfg, args.fields.split(",") if args.fields else None, args.workers)
+    print_summary(finish_run(out, chosen, cfg, args.gold), out)
     return 0
 
 

@@ -1,31 +1,31 @@
-image,individual_id,species,age,sex,feather,date,notes
-A0012 1996-im1058.jpg,A0012H,HAFLU,2K+,F,,1996-06-04,feather line partly under the board
-BX40 368 2004-im1800.jpg,BX40368H,HAFLU,4K,M,,2004-06-15,odd file name; feather strip covered
-BX40 398 2003-im1818.jpg,BX40398H,HAFLU,3K,M,,2003-06-18,odd file name; feather shows only 'FO'
-A3681 2001-im1686.jpg,A3681H,HAFLU,2K+,F,,2001-05-24,species lowercase blue on yellow and half covered
-A2404 2000-im1494.jpg,A2404H,HAFLU,2K,F,,2000-05-29,
-A2218 1998-im1452.jpg,A2218H,N/A,2K,M,,1998-07-21,species fully covered by board; feather '3. TERT'
-A1323 1997-im1302.jpg,A1323R,HAFLU,N/A,F,,1997-06-28,age box empty; ID suffix R; feather 'BJ 86 822 H'; sex half covered
-A2434 1999-im1507.jpg,A2434H,HAFLU,N/A,F,,1999-06-18,age box empty; feather 'BM 49 183 H'; sex half covered
-A3818 2002-im1708.jpg,,N/A,3K,N/A,,N/A,ID suffix covered; species/sex/date covered by boards (filename gives year 2002)
-A1340 2005-im1313.jpg,A1340H,HAFLU,9K,M,,2005-06-13,feather 'FOTO; ISOTOP-PROV'
-A3944 2006-im1720.jpg,A3944H,HAFLU,6K,F,,2006-06-05,grey text on yellow age box
-BB18346 1994-im0622.jpg,BB18346H,N/A,,,,1994-06-22,age and sex boxes mostly covered; species covered
-BB18441 1995-im0645.jpg,BB18441V,,3K+,F,,1995-05-31,species red SVFLU half covered; suffix V
-BB18024 1993-im0580.jpg,BB18024H,N/A,2K,M,,1993-06-13,species covered
-BB17280 1992-im0412.jpg,BB17280H,HAFLU,1K,F,,1992-06-29,species bottom edge covered but readable; feather '3. TER...'
-BD31002 1995-im0671.jpg,BD31002H,,2K,N/A,,1995-06-25,species mostly covered; sex covered
-BD31940 1996-im0912.jpg,BD31940H,HAFLU,3K,M,,1996-06-26,
-BD31768 1994-im0838.jpg,BD31768H,SFXHF,1K,F,,1994-08-05,hybrid species code SFxHF; feather '3. TERT'
-BZ11933 2007-im2197.jpg,,N/A,N/A,M,,2007-06-18,ID prefix partly covered; species and age covered
-BZ11744 2008-im2397.jpg,BZ11744H,SVFLU,4K+,F,,2008-06-21,red species code
-BZ10105 2003-im1989.jpg,BZ10105H,HAFLU,2K,M,,2003-06-22,feather 'FOTO'
-BX41024 2006-im1948.jpg,BX41024H,HAFLU,4K,M,,2006-06-10,feather 'ISOTOP-FJADER' partly covered
-BX40683 2005-im1883.jpg,BX40683H,,4K,M,,2005-06-25,species first letters covered
-BX40715 2004-im1892.jpg,BX40715H,SVFLU,3K+,F,,2004-06-18,magenta species code
-AX87015 1991-img0203.jpg,AX87015H,,2K,,,1991-07-02,species and sex half covered
-AX87168 1990-im2328.jpg,AX87168V,SVFLU,2K+,F,,1990-07-05,
-CE01168 2008-im2346.jpg,CE01168V,HAFLU,2K+,F,,2008-05-22,species spaced lowercase red 'h a f l u'
-BH64128 1966-im1010.jpg,BH64128H,HAFLU,4K,M,,,date year covered (only '06-18' visible); file name year 1966 looks like a typo
-AS93157 1990-im0096.jpg,AS93157H,,3K,M,,1990-06-23,species half covered
-AR36456 1993-im0062.jpg,AR36456H,HAFLU,6K,M,,1993-06-05,grey text on yellow age box
+image,individual_id,species,age,sex,feather,feather_text,feather_visibility,date,notes
+A0012 1996-im1058.jpg,A0012H,HAFLU,2K+,F,,RM-H pga SVFLU-bal,partial,1996-06-04,feather line partly under the board
+BX40 368 2004-im1800.jpg,BX40368H,HAFLU,4K,M,,,none,2004-06-15,odd file name; feather strip covered
+BX40 398 2003-im1818.jpg,BX40398H,HAFLU,3K,M,,FO,partial,2003-06-18,odd file name; feather shows only 'FO'
+A3681 2001-im1686.jpg,A3681H,HAFLU,2K+,F,,,none,2001-05-24,species lowercase blue on yellow and half covered
+A2404 2000-im1494.jpg,A2404H,HAFLU,2K,F,,,none,2000-05-29,
+A2218 1998-im1452.jpg,A2218H,N/A,2K,M,,3. TERT,full,1998-07-21,species fully covered by board; feather '3. TERT'
+A1323 1997-im1302.jpg,A1323R,HAFLU,N/A,F,,BJ 86 822 H,full,1997-06-28,age box empty; ID suffix R; feather 'BJ 86 822 H'; sex half covered
+A2434 1999-im1507.jpg,A2434H,HAFLU,N/A,F,,BM 49 183 H,full,1999-06-18,age box empty; feather 'BM 49 183 H'; sex half covered
+A3818 2002-im1708.jpg,,N/A,3K,N/A,,,none,N/A,ID suffix covered; species/sex/date covered by boards (filename gives year 2002)
+A1340 2005-im1313.jpg,A1340H,HAFLU,9K,M,,FOTO; ISOTOP-PROV,full,2005-06-13,feather 'FOTO; ISOTOP-PROV'
+A3944 2006-im1720.jpg,A3944H,HAFLU,6K,F,,DN,partial,2006-06-05,grey text on yellow age box
+BB18346 1994-im0622.jpg,BB18346H,N/A,,,,,none,1994-06-22,age and sex boxes mostly covered; species covered
+BB18441 1995-im0645.jpg,BB18441V,,3K+,F,,,none,1995-05-31,species red SVFLU half covered; suffix V
+BB18024 1993-im0580.jpg,BB18024H,N/A,2K,M,,,none,1993-06-13,species covered
+BB17280 1992-im0412.jpg,BB17280H,HAFLU,1K,F,,3. TER,partial,1992-06-29,species bottom edge covered but readable; feather '3. TER...'
+BD31002 1995-im0671.jpg,BD31002H,,2K,N/A,,,none,1995-06-25,species mostly covered; sex covered
+BD31940 1996-im0912.jpg,BD31940H,HAFLU,3K,M,,,none,1996-06-26,
+BD31768 1994-im0838.jpg,BD31768H,SFXHF,1K,F,,3. TERT,full,1994-08-05,hybrid species code SFxHF; feather '3. TERT'
+BZ11933 2007-im2197.jpg,,N/A,N/A,M,,,none,2007-06-18,ID prefix partly covered; species and age covered
+BZ11744 2008-im2397.jpg,BZ11744H,SVFLU,4K+,F,,,none,2008-06-21,red species code
+BZ10105 2003-im1989.jpg,BZ10105H,HAFLU,2K,M,,FOTO,full,2003-06-22,feather 'FOTO'
+BX41024 2006-im1948.jpg,BX41024H,HAFLU,4K,M,,ISOTOP-FJÄDER,partial,2006-06-10,feather 'ISOTOP-FJADER' partly covered
+BX40683 2005-im1883.jpg,BX40683H,,4K,M,,,none,2005-06-25,species first letters covered
+BX40715 2004-im1892.jpg,BX40715H,SVFLU,3K+,F,,,none,2004-06-18,magenta species code
+AX87015 1991-img0203.jpg,AX87015H,,2K,,,,none,1991-07-02,species and sex half covered
+AX87168 1990-im2328.jpg,AX87168V,SVFLU,2K+,F,,,none,1990-07-05,
+CE01168 2008-im2346.jpg,CE01168V,HAFLU,2K+,F,,,none,2008-05-22,species spaced lowercase red 'h a f l u'
+BH64128 1966-im1010.jpg,BH64128H,HAFLU,4K,M,,,none,,date year covered (only '06-18' visible); file name year 1966 looks like a typo
+AS93157 1990-im0096.jpg,AS93157H,,3K,M,,,none,1990-06-23,species half covered
+AR36456 1993-im0062.jpg,AR36456H,HAFLU,6K,M,,,none,1993-06-05,grey text on yellow age box

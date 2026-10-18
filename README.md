@@ -100,6 +100,16 @@ python -m src.submit_remote_pipeline \
   (`specimen_labels` table), `summary.json` and the evidence crops; rerunning with the same
   `--out` skips finished slides and retries model errors.
   The model is served by `pixi run vlm-server`; point `FEATHER_VLM_ENDPOINTS` at it.
+- **Label table in cluster runs**: every `process_image` task (Celery) and every sharded run
+  reads the label first, from the original slide, and keeps going with segmentation whatever
+  the label outcome. Workers reuse their loaded Qwen model (`FEATHER_LABEL_VLM=auto`), cache
+  each slide's result and evidence under `<output_dir>/labels/`, and the run stores one
+  `specimen_labels` row per slide in `pipeline_metrics/run_stats.sqlite3` (sharded) or writes
+  `<output_dir>/labels/labels.csv` etc. on the driver (Celery). `labels_*` counters go to the
+  run's local state, JSONL events and Redis totals; model errors are counted apart from fields
+  that are not on the slide. Label-only runs on the workers:
+  `pixi run labels -- --manifest configs/label_sample_30.txt --distributed --gold data/label_gold.csv`.
+  `FEATHER_ENABLE_LABELS=0` turns it off.
 - **Sample segmentation runs**: `pixi run sample-run -- --n 5` (or `--match "A0012 1996"`) sends
   slides through the workers' normal pipeline and copies the outputs to `data/sample_runs/`.
   Their run ids start with `test-`.

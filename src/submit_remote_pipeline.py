@@ -37,7 +37,8 @@ def _list_remote_images(
     return paths
 
 
-def _dispatch(paths: Sequence[str], remote_output_dir: str, poll_seconds: float) -> None:
+def _dispatch(paths: Sequence[str], remote_output_dir: str, poll_seconds: float,
+              labels_out: str | None = None) -> None:
     if not paths:
         print("No remote JPG/JPEG files found.")
         return
@@ -51,6 +52,10 @@ def _dispatch(paths: Sequence[str], remote_output_dir: str, poll_seconds: float)
         time.sleep(poll_seconds)
 
     results = async_result.get(disable_sync_subtasks=False)
+    if labels_out:
+        from src.full_run_distributed import _write_labels
+
+        _write_labels(results, labels_out)
     successes = sum(1 for item in results if item.get("success"))
     failures = [item for item in results if not item.get("success")]
     print(f"Pipeline complete: {successes}/{total} successful")
@@ -71,6 +76,8 @@ def main() -> None:
     parser.add_argument("--remote-output-dir", required=True, help="Output dir path as seen on cluster nodes")
     parser.add_argument("--max-images", type=int, default=None, help="Optional cap on number of images")
     parser.add_argument("--poll-seconds", type=float, default=5.0, help="Status polling interval")
+    parser.add_argument("--labels-out", default=None,
+                        help="local dir for the specimen label table (default data/label_runs/pipeline-<time>)")
     args = parser.parse_args()
     if not args.host:
         parser.error("--host is required (or set FEATHER_HEAD_HOST)")
@@ -83,7 +90,11 @@ def main() -> None:
         max_images=args.max_images,
     )
     print(f"Found {len(paths)} remote images on {args.host}:{args.remote_input_dir}")
-    _dispatch(paths=paths, remote_output_dir=args.remote_output_dir, poll_seconds=args.poll_seconds)
+    labels_out = args.labels_out or os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "label_runs",
+        "pipeline-" + time.strftime("%Y%m%d-%H%M%S"))
+    _dispatch(paths=paths, remote_output_dir=args.remote_output_dir, poll_seconds=args.poll_seconds,
+              labels_out=labels_out)
 
 
 if __name__ == "__main__":

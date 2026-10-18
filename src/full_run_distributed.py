@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import time
 from glob import glob
@@ -6,6 +7,26 @@ from glob import glob
 from celery import group
 
 from src.celery_tasks import process_image
+
+
+def _write_labels(results: list[dict], label_dir: str) -> None:
+    """Specimen label table for the run, from the label results the workers
+    returned with each task (independent of segmentation success)."""
+    from pathlib import Path
+
+    from src import label_extract as lx
+
+    labels = [lx.LabelResult.from_json(item["labels"]) for item in results if item.get("labels")]
+    if not labels:
+        return
+    out = Path(label_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    with open(out / "labels.jsonl", "a") as fh:
+        for r in labels:
+            fh.write(json.dumps(r.to_json()) + "\n")
+    summary = lx.finish_run(out, [r.image for r in labels], lx.load_config())
+    print(f"Label table: {len(labels)} slides, {summary['needs_review']} need review, "
+          f"{summary['slides_with_model_error']} with model errors -> {out}")
 
 
 def run_pipeline(input_dir: str, output_dir: str) -> None:
@@ -26,6 +47,7 @@ def run_pipeline(input_dir: str, output_dir: str) -> None:
         time.sleep(5)
 
     results = async_result.get(disable_sync_subtasks=False)
+    _write_labels(results, os.path.join(output_dir, "labels"))
     successes = sum(1 for item in results if item.get("success"))
     failures = [item for item in results if not item.get("success")]
 
