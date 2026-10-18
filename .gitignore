@@ -44,3 +44,4 @@ install_grafana_dashboards_final6.sh
 .env.*
 !.env.example
 notebooks/*_results.ipynb
+data/prompt_lab/

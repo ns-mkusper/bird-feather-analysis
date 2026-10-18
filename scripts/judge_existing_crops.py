@@ -21,32 +21,8 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src import feather_judge, label_extract as lx  # noqa: E402
 from src.feather_processing import load_seg_config  # noqa: E402
+from src.crop_locate import crop_mask  # noqa: E402
 from src.output_names import find_crops  # noqa: E402
-
-
-def locate(slide_gray: np.ndarray, crop_bgr: np.ndarray, scale: float = 0.25) -> tuple[int, int, float]:
-    """Top-left (x, y) of the crop on the slide and the match score."""
-    cg = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2GRAY)
-    m = (cg > 8).astype(np.uint8)
-    s_small = cv2.resize(slide_gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
-    c_small = cv2.resize(cg, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
-    m_small = cv2.resize(m, (c_small.shape[1], c_small.shape[0]), interpolation=cv2.INTER_NEAREST)
-    # compare edges: equalization changes brightness but keeps edges
-    e_s = cv2.Canny(s_small, 30, 90).astype(np.float32)
-    e_c = cv2.Canny(c_small, 30, 90).astype(np.float32) * m_small
-    res = cv2.matchTemplate(e_s, e_c, cv2.TM_CCORR_NORMED)
-    _, score, _, (x, y) = cv2.minMaxLoc(res)
-    # refine at full resolution in a small window
-    X, Y = int(x / scale), int(y / scale)
-    r = int(3 / scale)
-    y0, x0 = max(0, Y - r), max(0, X - r)
-    win = slide_gray[y0:Y + r + cg.shape[0], x0:X + r + cg.shape[1]]
-    if win.shape[0] >= cg.shape[0] and win.shape[1] >= cg.shape[1]:
-        res2 = cv2.matchTemplate(cv2.Canny(win, 30, 90).astype(np.float32),
-                                 cv2.Canny(cg, 30, 90).astype(np.float32) * m, cv2.TM_CCORR_NORMED)
-        _, score, _, (dx, dy) = cv2.minMaxLoc(res2)
-        X, Y = x0 + dx, y0 + dy
-    return X, Y, float(score)
 
 
 def main() -> int:
@@ -69,14 +45,9 @@ def main() -> int:
         if slide is None:
             print("missing slide", n)
             continue
-        gray = cv2.cvtColor(slide, cv2.COLOR_BGR2GRAY)
         for i, cp in enumerate(find_crops(crops_dir, n)):
             crop = cv2.imread(str(cp))
-            x, y, match = locate(gray, crop)
-            mask = np.zeros(gray.shape, bool)
-            cm = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY) > 8
-            h, w = cm.shape
-            mask[y:y + h, x:x + w] = cm[: gray.shape[0] - y, : gray.shape[1] - x]
+            mask, match = crop_mask(slide, crop)
             res, panel = feather_judge.judge(client, slide, mask, crop, cfg)
             qc = qc_dir / (cp.stem + "_qc.jpg")
             panel.save(qc, quality=85)

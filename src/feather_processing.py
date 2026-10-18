@@ -158,14 +158,10 @@ class FeatherProcessor:
         }
         if not (self.has_vlm and self.vlm_generate is not None and (self.vlm_scoring_enabled or self.vlm_metadata_enabled)):
             return out
-        instruction = (
-            "You are a precise computer vision quality analyst. Return ONLY valid JSON.\n"
-            "Given this feather slide image/overlay, extract specimen metadata and segmentation quality.\n"
-            "Return exactly JSON with keys:\n"
-            '{"Bird_ID":"A1234 or UNKNOWN","Date":"YYYY-MM-DD or YYYY or UNKNOWN","quality_score_1_to_10":0-10,'
-            '"all_feathers_covered":true/false,"background_leakage_detected":true/false,"green_boxes_grouped_feathers":true/false,'
-            '"notes":"short explanation of major issue(s) or empty string"}'
-        )
+        try:
+            instruction = load_seg_config()["slide_judge"]["prompt"]   # editable in configs/segmentation.json
+        except (KeyError, OSError, ValueError):
+            instruction = "Rate this feather segmentation overlay 1-10 as JSON {\"quality_score_1_to_10\": n}."
         # The model's own chat template (Qwen3.8 differs from the hand-written Qwen3-VL
         # tokens this used to hard-code); thinking off so the reply is just the JSON.
         prompt = self._chat_prompt(instruction)

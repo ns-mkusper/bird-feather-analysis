@@ -1,15 +1,25 @@
 {
-  "_comment": "Feather segmentation settings (src/feather_processing.py). A Celery task or sample run can override any key with options={'segmentation': {...}} without redeploying. sam3.imgsz needs a worker restart; everything else applies per task.",
+  "_comment": "Feather segmentation settings (src/feather_processing.py). A Celery task or sample run can override any key with options={'segmentation': {...}} without redeploying. sam3.imgsz needs a worker restart; everything else applies per task. slide_judge = the slide-level QA prompt on the overlay; feather_judge = the per-feather score.",
   "sam3": {
-    "prompts": ["bird feather"],
-    "retry_prompts": ["dark bird feather", "black feather"],
+    "prompts": [
+      "bird feather"
+    ],
+    "retry_prompts": [
+      "dark bird feather",
+      "black feather"
+    ],
     "conf": 0.25,
     "nms_iou": 0.3,
     "max_box_area_ratio": 0.45
   },
   "dino_sam2": {
-    "prompts": ["bird feather."],
-    "retry_prompts": ["dark bird feather.", "black feather."],
+    "prompts": [
+      "bird feather."
+    ],
+    "retry_prompts": [
+      "dark bird feather.",
+      "black feather."
+    ],
     "score_thresh": 0.25,
     "nms_iou": 0.3,
     "max_box_area_ratio": 0.45,
@@ -36,5 +46,9 @@
     "panel_height": 900,
     "max_tokens": 220,
     "prompt": "You are checking ONE segmented feather from a museum feather slide. The image has two panels. LEFT: the original slide around this feather, with the segmentation outline drawn in green. RIGHT: the extracted feather on black, exactly as the pipeline saved it.\n\nA GOOD segment is exactly one whole feather: from the tip of the vane down to the shaft (the bottom part near the glue is trimmed on purpose), both vanes complete including pale or white parts and fringe barbs, the outline following the feather edge, and no background (grey card, black board, label text, glue blob) and no part of a neighbouring feather.\n\nA POOR segment is: a fragment or thin sliver of a feather; a feather with its tip or one vane missing (the outline cuts through the feather, e.g. where a black board crosses it or where white parts blend into the background); two or more feathers merged into one segment; large background areas included; or not a feather at all.\n\nScore 1-10: 9-10 complete and clean; 7-8 small edge errors only; 4-6 a noticeable part missing or background included; 1-3 fragment, merged feathers or not a feather.\n\nAnswer with JSON only: {\"score\": <1-10>, \"complete\": true|false, \"single_feather\": true|false, \"fragment\": true|false, \"missing_part\": \"none\"|\"tip\"|\"vane\"|\"white_parts\"|\"base\"|\"other\", \"background_included\": true|false, \"other_feather_included\": true|false, \"notes\": \"<at most 20 words>\"}"
+  },
+  "slide_judge": {
+    "prompt": "You are a precise computer vision quality analyst. Return ONLY valid JSON.\nGiven this feather slide image/overlay, extract specimen metadata and segmentation quality.\nReturn exactly JSON with keys:\n{\"Bird_ID\":\"A1234 or UNKNOWN\",\"Date\":\"YYYY-MM-DD or YYYY or UNKNOWN\",\"quality_score_1_to_10\":0-10,\"all_feathers_covered\":true/false,\"background_leakage_detected\":true/false,\"green_boxes_grouped_feathers\":true/false,\"notes\":\"short explanation of major issue(s) or empty string\"}",
+    "max_tokens": 180
   }
 }

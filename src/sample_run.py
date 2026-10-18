@@ -80,6 +80,20 @@ def run(n: int = 5, seed: int = 0, match: list[str] | None = None, timeout: int 
             if any(belongs_to(Path(f).name, n) for n in slide_names):
                 io.fetch_remote_file(host, f, local_out)
                 got += 1
+        # per-feather judge panels (new worker code), in the feather_qc/ subfolder
+        qc = f"{remote_out}/feather_qc"
+        cmd = f"find {io._remote_shell_path(qc)} -maxdepth 1 -type f -iname '*.jpg' | sort"
+        proc = subprocess.run([*io._ssh_base_cmd(host), cmd], capture_output=True, text=True)
+        for f in (line.strip() for line in proc.stdout.splitlines() if line.strip()):
+            if any(belongs_to(Path(f).name.replace("_qc.jpg", ".jpg"), n) for n in slide_names):
+                io.fetch_remote_file(host, f, local_out / "feather_qc")
+                got += 1
+    # what each task returned (success, reason, per-feather records with judge scores, labels)
+    local_out.mkdir(parents=True, exist_ok=True)
+    import json
+
+    (local_out / "task_results.json").write_text(json.dumps({Path(p).name: done.get(p) for p in chosen},
+                                                            indent=1, default=str))
     print(f"copied {got} output files to {local_out}")
     return local_out
 
