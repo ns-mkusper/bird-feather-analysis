@@ -244,28 +244,48 @@ def split_date(value: str | None) -> dict[str, str | None]:
     return out
 
 
-def feather_id(bird_id: str, year: str, index: int) -> str:
-    """'A0012H', '1996', 0 -> 'A0012H_1996_A'."""
-    return f"{bird_id}_{year}_{seq_letter(index)}"
+def feather_id(bird_id: str, period: str, index: int) -> str:
+    """'A0012H', '1996', 0 -> 'A0012H_1996_A'; period is the full YYYYMMDD
+    when the bird has several slides that year ('BB17692H_19980612_A')."""
+    return f"{bird_id}_{period}_{seq_letter(index)}"
 
 
-def assign_feather_ids(result: "LabelResult", crops: list[str]) -> list[dict]:
-    """Feather IDs for a slide's segmented feathers. `crops` must already be in
-    left-to-right order (the segmenter sorts by x). Stored on the result."""
+def feather_period(result: "LabelResult", siblings: list[str] | None) -> str:
+    """Year, or the label date as YYYYMMDD when another slide in `siblings`
+    has the same file-name ID and year (image number if that date is unknown)."""
     parts = result.id_parts()
-    result.feathers = [{"seq": seq_letter(i), "feather_id": feather_id(parts["bird_id"], parts["year"], i),
-                        "crop": Path(c).name, **parts} for i, c in enumerate(crops)]
+    if siblings and shares_id_year(result.file_id, siblings):
+        d = result.fields.get("date")
+        full = compact_date(d.value) if d is not None and d.status != "model_error" else None
+        tag = Path(result.file_id).stem.lstrip("-").split("-", 1)[-1]
+        return full or f"{parts['year']}-{tag}"
+    return parts["year"]
+
+
+def assign_feather_ids(result: "LabelResult", crops: list[str], period: str | None = None) -> list[dict]:
+    """Feather IDs for a slide's segmented feathers. `crops` must already be in
+    left-to-right order (the segmenter sorts by x). The period comes from the
+    crop names when they carry one (year / YYYYMMDD), else the label year.
+    Stored on the result."""
+    parts = result.id_parts()
+    period = period or (period_of_crop(crops[0]) if crops else None) or parts["year"]
+    result.feathers = [{"seq": seq_letter(i), "feather_id": feather_id(parts["bird_id"], period, i),
+                        "period": period, "crop": Path(c).name, **parts} for i, c in enumerate(crops)]
     return result.feathers
 
 
-def attach_feathers_from_crops(results: list["LabelResult"], crops_dir: str | Path) -> int:
+def attach_feathers_from_crops(results: list["LabelResult"], crops_dir: str | Path,
+                               siblings: list[str] | None = None) -> int:
     """Feather IDs from a segmentation output folder (crops found under the
-    current or the older file names, left to right)."""
+    current or the older file names, left to right). `siblings`: all slide
+    file names, needed for older crop names to tell same-year slides apart."""
     n = 0
     for r in results:
-        crops = [str(p) for p in find_crops(crops_dir, r.file_id)]
+        d = r.fields.get("date")
+        crops = [str(p) for p in find_crops(crops_dir, r.file_id, d.value if d is not None else None)]
         if crops:
-            assign_feather_ids(r, crops)
+            period = None if period_of_crop(crops[0]) else feather_period(r, siblings)
+            assign_feather_ids(r, crops, period)
             n += 1
     return n
 
@@ -277,7 +297,8 @@ def load_config(path: str | Path | None = None) -> dict:
 # ---------------------------------------------------------------- file name
 
 # File-name parsing lives with the output naming rules (no heavy imports).
-from src.output_names import find_crops, parse_filename, seq_letter  # noqa: E402
+from src.output_names import find_crops, parse_filename, period_of_crop, seq_letter, shares_id_year  # noqa: E402
+from src.output_names import compact_date  # noqa: E402
 
 
 # ---------------------------------------------------------------- crops
@@ -709,6 +730,7 @@ CREATE TABLE IF NOT EXISTS specimen_feathers (
     file_id TEXT NOT NULL,
     seq TEXT NOT NULL,
     feather_id TEXT,
+    period TEXT,
     bird_id TEXT, bird_id_source TEXT, bird_id_status TEXT,
     year TEXT, year_source TEXT, year_status TEXT,
     crop TEXT,
@@ -767,7 +789,7 @@ def upsert_labels(conn: sqlite3.Connection, results: list[LabelResult], run_id: 
                      (run_id, row["node_id"], r.file_id))
         for f in r.feathers:
             frow = {"run_id": run_id, "node_id": row["node_id"], "file_id": r.file_id,
-                    **{k: f.get(k) for k in ("seq", "feather_id", "bird_id", "bird_id_source", "bird_id_status",
+                    **{k: f.get(k) for k in ("seq", "feather_id", "period", "bird_id", "bird_id_source", "bird_id_status",
                                              "year", "year_source", "year_status", "crop")}}
             fc = list(frow)
             conn.execute(f"INSERT OR REPLACE INTO specimen_feathers ({','.join(fc)}) "
@@ -1003,7 +1025,7 @@ def run_distributed(chosen: list[str], out: Path, remote_output_dir: str | None 
 
 
 def write_feathers_csv(results: list[LabelResult], path: Path) -> Path:
-    cols = ["file_id", "seq", "feather_id", "bird_id", "bird_id_source", "bird_id_status",
+    cols = ["file_id", "seq", "feather_id", "period", "bird_id", "bird_id_source", "bird_id_status",
             "year", "year_source", "year_status", "crop"]
     with open(path, "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=cols)
@@ -1064,7 +1086,7 @@ def score_feather_counts(results: list[LabelResult], gold_csv: str | Path) -> di
 
 
 def finish_run(out: Path, chosen: list[str], cfg: dict, gold: str | Path | None = None,
-               segmentation_dir: str | Path | None = None) -> dict:
+               segmentation_dir: str | Path | None = None, siblings: list[str] | None = None) -> dict:
     """Writes labels.csv, review.csv, feathers.csv, labels.sqlite3 and
     summary.json from out/labels.jsonl (the latest result per slide), with
     feather IDs from a segmentation output folder when given, and scores
@@ -1072,7 +1094,7 @@ def finish_run(out: Path, chosen: list[str], cfg: dict, gold: str | Path | None 
     final = load_previous(out / "labels.jsonl")
     results = [final[Path(p).name] for p in chosen if Path(p).name in final]
     if segmentation_dir and Path(segmentation_dir).exists():
-        attach_feathers_from_crops(results, segmentation_dir)
+        attach_feathers_from_crops(results, segmentation_dir, siblings)
     write_feathers_csv(results, out / "feathers.csv")
     write_csv(results, out / "labels.csv")
     write_review_csv(results, out / "review.csv")
@@ -1145,7 +1167,8 @@ def main(argv: list[str] | None = None) -> int:
         run_distributed(todo, out, timeout=args.timeout)
     else:
         run_local(todo, out, cfg, args.fields.split(",") if args.fields else None, args.workers)
-    print_summary(finish_run(out, chosen, cfg, args.gold, args.segmentation_dir), out)
+    all_names = [Path(p).name for p in RemoteClusterIO(rc).list_remote_images()] if args.segmentation_dir else None
+    print_summary(finish_run(out, chosen, cfg, args.gold, args.segmentation_dir, all_names), out)
     return 0
 
 

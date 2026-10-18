@@ -305,3 +305,24 @@ def test_slide_problems_ranks_wrong_and_missed_first():
     gold = {"bird_id": "A0012H", "sex": "N/A", "age": "2K", "species": "", "feather_count": "4"}
     kinds = [(p["field"], p["kind"]) for p in lx.slide_problems(r, gold, cfg)]
     assert kinds == [("sex", "wrong"), ("age", "missed"), ("feathers", "count"), ("species", "needs_review")]
+
+
+def test_feather_ids_use_full_date_for_same_year_slides(tmp_path):
+    sib = ["BB17692 1998-im0513.jpg", "BB17692 1998-im0514.jpg", "A0012 1996-im1058.jpg"]
+    def res(name, date):
+        r = lx.LabelResult(name, filename=lx.parse_filename(name))
+        r.fields["bird_id"] = lx.FieldResult("BB17692H", "readable")
+        r.fields["date"] = lx.FieldResult(date, "readable" if date else "not_found")
+        return r
+    # new crop names carry the period
+    r = res("BB17692 1998-im0513.jpg", "1998-06-12")
+    ids = lx.assign_feather_ids(r, ["BB17692_19980612_Feather_A.jpg", "BB17692_19980612_Feather_B.jpg"])
+    assert [f["feather_id"] for f in ids] == ["BB17692H_19980612_A", "BB17692H_19980612_B"]
+    # older crop names: period from siblings + label date, image number if the date is unknown
+    for n in (1, 2):
+        (tmp_path / f"BB17692 1998-im0514_BB17692_1998_Feather_{n}.jpg").write_bytes(b"x")
+        (tmp_path / f"BB17692 1998-im0513_BB17692_1998_Feather_{n}.jpg").write_bytes(b"x")
+    a, b = res("BB17692 1998-im0513.jpg", "1998-06-12"), res("BB17692 1998-im0514.jpg", None)
+    lx.attach_feathers_from_crops([a, b], tmp_path, sib)
+    assert a.feathers[0]["feather_id"] == "BB17692H_19980612_A"
+    assert b.feathers[1]["feather_id"] == "BB17692H_1998-im0514_B"

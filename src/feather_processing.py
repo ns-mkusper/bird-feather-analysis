@@ -470,11 +470,16 @@ class FeatherProcessor:
             feathers.sort(key=lambda item: item["x"])
             from src import output_names as on
 
-            names = on.output_names(image_path)  # 'CE01168 2008', 'CE01168_2008' (see output_names.py)
+            label_date = None
+            if labels is not None and labels.fields.get("date") is not None \
+                    and labels.fields["date"].status != "model_error":
+                label_date = labels.fields["date"].value
+            # 'CE01168 2008' / 'CE01168_2008'; full label date for same-year slides (see output_names.py)
+            names = on.output_names(image_path, date=label_date)
             source_name = os.path.basename(image_path)
             for old in os.listdir(output_dir):
                 # crops from an earlier attempt at this slide (new or old names)
-                if "_Feather_" in old and old.endswith(".jpg") and on.belongs_to(old, source_name):
+                if "_Feather_" in old and old.endswith(".jpg") and on.belongs_to(old, source_name, label_date):
                     try:
                         os.remove(os.path.join(output_dir, old))
                     except OSError:
@@ -523,7 +528,7 @@ class FeatherProcessor:
             if labels is not None:
                 from src import label_extract as lx
 
-                feather_ids = lx.assign_feather_ids(labels, saved_names)
+                feather_ids = lx.assign_feather_ids(labels, saved_names, names["period"])
 
             vlm_score = (
                 float(vlm_judge["quality_score_1_to_10"])

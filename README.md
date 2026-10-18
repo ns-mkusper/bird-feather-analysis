@@ -105,8 +105,9 @@ python -m src.submit_remote_pipeline \
   The red/blue text line under the label boxes and the code above the date are ignored.
 - **Output file names** (`src/output_names.py`): slide `CE01168 2008-im2346.jpg` gives
   `CE01168 2008_BoundingBoxes.jpg` and crops `CE01168_2008_Feather_A.jpg`, `..._B.jpg`, ... (A = leftmost),
-  from the file name's ID and year. A bird with several slides in one year (63 slides) keeps the
-  image number: `BB17692_1998-im0513_Feather_A.jpg`. Lookups also find the older
+  from the file name's ID and year. A bird with several slides in one year (63 slides) uses the full
+  label date instead of the year, in file names and feather IDs (`BB17692_19980612_Feather_A.jpg`,
+  `BB17692H_19980612_A`); the image number only when that date cannot be read. Lookups also find the older
   `<slide>_<id>_<date>_Feather_<n>.jpg` names of earlier runs.
   The model is served by `pixi run vlm-server`; point `FEATHER_VLM_ENDPOINTS` at it.
 - **Label table in cluster runs**: every `process_image` task (Celery) and every sharded run
