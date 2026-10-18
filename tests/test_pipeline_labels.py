@@ -42,13 +42,29 @@ class StubProcessor:
         r.fields["sex"] = lx.FieldResult(None, "model_error")
         return r
 
-    def process_image(self, image_path, output_dir, profile="default", labels=None):
+    def process_image(self, image_path, output_dir, profile="default", labels=None, options=None):
         StubProcessor.calls.append(("segment", Path(image_path).name))
         ok = Path(image_path).name.startswith("BB")   # first slide fails, second gets 2 feathers
         res = StubResult(image_path, success=ok)
         if ok and labels is not None:
             res.feather_ids = lx.assign_feather_ids(labels, ["c_Feather_1.jpg", "c_Feather_2.jpg"])
         return res
+
+
+class DateClient:
+    """Fake VLM: a fixed date for label prompts, a fixed verdict for feather-judge prompts."""
+    model_name = "fake"
+
+    def __init__(self, date="2000-01-01", score=9):
+        self.date, self.score, self.judge_calls = date, score, 0
+
+    def ask(self, image, prompt, timeout=None):
+        if "segmented feather" in prompt:
+            self.judge_calls += 1
+            return json.dumps({"score": self.score, "complete": True, "single_feather": True, "fragment": False,
+                               "missing_part": "none", "background_included": False,
+                               "other_feather_included": False, "notes": "clean"})
+        return json.dumps({"value": self.date, "visible": "yes", "confidence": 0.99})
 
 
 def test_sharded_run_persists_labels_when_segmentation_fails(tmp_path, monkeypatch):
@@ -129,6 +145,7 @@ def test_process_image_writes_new_names_left_to_right(tmp_path):
 
     p = object.__new__(FeatherProcessor)
     p.segmenter, p.has_vlm, p.vlm_scoring_enabled, p.vlm_metadata_enabled = "sam3", False, False, False
+    p._label_client = DateClient()
     p._segment_sam3 = lambda *a, **k: ([[200, 20, 230, 180], [20, 20, 50, 180], [110, 20, 140, 180]],
                                        masks_at([200, 20, 110]), "")
     labels = lx.LabelResult(str(slide), filename=lx.parse_filename(slide.name))
@@ -137,9 +154,11 @@ def test_process_image_writes_new_names_left_to_right(tmp_path):
     res = p.process_image(str(slide), str(out), labels=labels)
 
     assert res.success and res.feathers_saved == 3
-    names = sorted(f.name for f in out.iterdir())
+    names = sorted(f.name for f in out.iterdir() if f.is_file())
     assert names == ["CE01168 2008_BoundingBoxes.jpg", "CE01168_2008_Feather_A.jpg",
                      "CE01168_2008_Feather_B.jpg", "CE01168_2008_Feather_C.jpg"]
+    assert all(f["judge_status"] == "ok" and f["judge_score"] == 9 and f["needs_review"] == "" for f in res.feather_ids)
+    assert all((out / f["qc_image"]).exists() for f in res.feather_ids)
     assert [(f["feather_id"], f["crop"]) for f in res.feather_ids] == [
         ("CE01168V_2008_A", "CE01168_2008_Feather_A.jpg"), ("CE01168V_2008_B", "CE01168_2008_Feather_B.jpg"),
         ("CE01168V_2008_C", "CE01168_2008_Feather_C.jpg")]
@@ -147,17 +166,6 @@ def test_process_image_writes_new_names_left_to_right(tmp_path):
     import cv2
     a = cv2.imread(str(out / "CE01168_2008_Feather_A.jpg"))
     assert a is not None and a.shape[1] <= 31
-
-
-class DateClient:
-    """Fake VLM: answers every date crop with a fixed date per slide image size."""
-    model_name = "fake"
-
-    def __init__(self, date):
-        self.date = date
-
-    def ask(self, image, prompt, timeout=None):
-        return json.dumps({"value": self.date, "visible": "yes", "confidence": 0.99})
 
 
 @pytest.mark.parametrize("sibling_date,expect_prefix", [
@@ -177,6 +185,7 @@ def test_process_image_names_same_year_slides_by_label_date(tmp_path, sibling_da
     m[20:180, 40:70] = 1
     p = object.__new__(FeatherProcessor)
     p.segmenter, p.has_vlm, p.vlm_scoring_enabled, p.vlm_metadata_enabled = "sam3", False, False, False
+    p._label_client = DateClient()
     p._segment_sam3 = lambda *a, **k: ([[40, 20, 70, 180]], [m], "")
     p._label_client = DateClient(sibling_date)          # the sibling's date reading
     name = "BB17692 1998-im0513.jpg"
@@ -202,6 +211,7 @@ def test_process_image_unreadable_own_date_uses_image_number(tmp_path):
     m[20:180, 40:70] = 1
     p = object.__new__(FeatherProcessor)
     p.segmenter, p.has_vlm, p.vlm_scoring_enabled, p.vlm_metadata_enabled = "sam3", False, False, False
+    p._label_client = DateClient()
     p._segment_sam3 = lambda *a, **k: ([[40, 20, 70, 180]], [m], "")
     name = "BB17692 1998-im0514.jpg"
     labels = lx.LabelResult(str(raw / name), filename=lx.parse_filename(name))
@@ -210,3 +220,99 @@ def test_process_image_unreadable_own_date_uses_image_number(tmp_path):
     res = p.process_image(str(raw / name), str(tmp_path / "out"), labels=labels)
     assert res.feather_ids[0]["feather_id"] == "BB17692H_1998-im0514_A"
     assert (tmp_path / "out" / "BB17692_1998-im0514_Feather_A.jpg").exists()
+
+
+
+def test_process_image_merges_a_sliver_into_its_feather(tmp_path):
+    """A3818 case: SAM returns one vane as a separate thin mask -> one crop, not two."""
+    import numpy as np
+    from src.feather_processing import FeatherProcessor
+
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    slide = raw / "A3818 2002-im1708.jpg"
+    Image.new("RGB", (400, 300), "white").save(slide)
+    full = [np.zeros((300, 400), np.float32) for _ in range(3)]
+    full[0][30:270, 40:80] = 1      # feather A
+    full[1][30:270, 200:240] = 1    # feather B
+    full[2][60:220, 194:200] = 1    # sliver touching B's left edge
+    p = object.__new__(FeatherProcessor)
+    p.segmenter, p.has_vlm, p.vlm_scoring_enabled, p.vlm_metadata_enabled = "sam3", False, False, False
+    p._label_client = client = DateClient(score=4)
+    p._segment_sam3 = lambda *a, **k: ([[40, 30, 80, 270], [200, 30, 240, 270], [194, 60, 200, 220]],
+                                       full, "", [0.9, 0.9, 0.4])
+    res = p.process_image(str(slide), str(tmp_path / "out"))
+    assert res.feathers_saved == 2 and client.judge_calls == 2
+    b = res.feather_ids[1]
+    assert b["sam_masks"] == 2 and "fragment touching" in b["postprocess"]
+    assert b["needs_review"] == "score 4"           # low judge score is surfaced per feather
+
+
+def test_options_override_the_config(tmp_path):
+    import numpy as np
+    from src.feather_processing import FeatherProcessor
+
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    Image.new("RGB", (400, 300), "white").save(raw / "A0001 1999-im0001.jpg")
+    m = np.zeros((300, 400), np.float32)
+    m[30:270, 40:80] = 1
+    p = object.__new__(FeatherProcessor)
+    p.segmenter, p.has_vlm, p.vlm_scoring_enabled, p.vlm_metadata_enabled = "sam3", False, False, False
+    p._label_client = client = DateClient()
+    seen = {}
+    def seg(*a, **k):
+        seen["conf"] = k.get("conf")
+        return [[40, 30, 80, 270]], [m], "", [0.9]
+    p._segment_sam3 = seg
+    res = p.process_image(str(raw / "A0001 1999-im0001.jpg"), str(tmp_path / "out"),
+                          options={"segmentation": {"sam3": {"conf": 0.4}, "feather_judge": {"enabled": False}}})
+    assert seen["conf"] == 0.4 and client.judge_calls == 0 and res.feather_ids[0]["judge_status"] == "disabled"
+
+
+def test_sharded_run_writes_per_feather_table(tmp_path, monkeypatch):
+    import csv as _csv
+    from src import full_run_sharded as frs
+
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    for n in ("A0012 1996-im1058.jpg", "BB17280 1992-im0412.jpg"):
+        Image.new("RGB", (40, 46)).save(raw / n)
+    monkeypatch.setattr(frs, "FeatherProcessor", StubProcessor)
+    monkeypatch.setattr(frs, "_connect_metrics_redis", lambda: None)
+    monkeypatch.setenv("FEATHER_RUN_ID", "t2")
+    monkeypatch.setenv("FEATHER_NODE_ID", "node-a")
+    monkeypatch.setenv("FEATHER_METRICS_DIR", str(tmp_path / "metrics"))
+    frs.run_shard(str(raw), str(tmp_path / "out"), 0, 1, 0, None)
+    rows = list(_csv.DictReader(open(tmp_path / "metrics" / "t2_node-a_feathers.csv")))
+    assert [r["feather_id"] for r in rows] == ["A0012H_1992_A", "A0012H_1992_B"]
+    assert rows[0]["file_id"] == "BB17280 1992-im0412.jpg" and rows[0]["bird_id"] == "A0012H"
+    assert rows[0]["run_id"] == "t2" and rows[0]["node_id"] == "node-a"
+    assert set(lx.FEATHER_TABLE_COLS) == set(rows[0])
+
+
+def test_feather_table_row_has_label_and_segmentation_fields():
+    r = lx.LabelResult("A0012 1996-im1058.jpg", filename=lx.parse_filename("A0012 1996-im1058.jpg"))
+    r.fields["bird_id"] = lx.FieldResult("A0012H", "readable")
+    r.fields["species"] = lx.FieldResult("HAFLU", "readable")
+    r.fields["sex"] = lx.FieldResult(None, "not_found")
+    r.fields["date"] = lx.FieldResult("1996-06-04", "readable")
+    ids = lx.assign_feather_ids(r, ["A0012_1996_Feather_A.jpg"])
+    r.feathers = [{**ids[0], "bbox": [1, 2, 3, 4], "judge_status": "ok", "judge_score": 8.0,
+                   "needs_review": "", "postprocess": "merged fragment touching [2]"}]
+    row = lx.feather_table_rows(r, "run1")[0]
+    assert row["feather_id"] == "A0012H_1996_A" and row["species"] == "HAFLU" and row["sex"] == "N/A"
+    assert (row["year"], row["month"], row["day"]) == ("1996", "06", "04")
+    assert row["bbox"] == "[1, 2, 3, 4]" and row["judge_score"] == 8.0 and row["postprocess"].startswith("merged")
+
+
+def test_distributed_driver_writes_feathers_without_labels(tmp_path):
+    import csv as _csv
+    from src.full_run_distributed import _write_labels
+
+    _write_labels([{"image_path": "/x/A0012 1996-im1058.jpg", "success": True, "labels": None,
+                    "feather_ids": [{"seq": "A", "crop": "A0012_1996_Feather_A.jpg", "judge_score": 9.0}]}],
+                  str(tmp_path / "labels"))
+    rows = list(_csv.DictReader(open(tmp_path / "labels" / "feathers.csv")))
+    assert rows[0]["crop"] == "A0012_1996_Feather_A.jpg" and rows[0]["judge_score"] == "9.0"
+    assert rows[0]["bird_id"] == "A0012"        # backup from the file name

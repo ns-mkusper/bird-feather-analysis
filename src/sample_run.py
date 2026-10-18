@@ -29,7 +29,9 @@ REPO = Path(__file__).resolve().parent.parent
 
 
 def run(n: int = 5, seed: int = 0, match: list[str] | None = None, timeout: int = 900,
-        run_id: str | None = None) -> Path:
+        run_id: str | None = None, options: dict | None = None) -> Path:
+    """`options`: {'segmentation': {...}} overrides for the workers' segmentation
+    config in this run (needs workers on the label-extract-fallbacks code or later)."""
     config = load_notebook_config_from_env()
     assert_tcp_reachable(config.broker_url, "Broker")
     app = create_celery_client(config)
@@ -45,7 +47,8 @@ def run(n: int = 5, seed: int = 0, match: list[str] | None = None, timeout: int 
     local_out = REPO / "data" / "sample_runs" / run_id
     print(f"{run_id}: {len(chosen)} slides -> workers")
 
-    pending = {app.send_task("src.celery_tasks.process_image", args=[p, remote_out]): p for p in chosen}
+    task_args = (lambda p: [p, remote_out, options]) if options else (lambda p: [p, remote_out])
+    pending = {app.send_task("src.celery_tasks.process_image", args=task_args(p)): p for p in chosen}
     deadline = time.time() + timeout
     done: dict[str, dict] = {}
     while pending and time.time() < deadline:
@@ -87,8 +90,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--match", action="append")
     ap.add_argument("--timeout", type=int, default=900, help="seconds to wait for the workers")
+    ap.add_argument("--seg-options", help="JSON file with segmentation overrides, e.g. {\"sam3\": {\"conf\": 0.3}}")
     args = ap.parse_args(argv)
-    run(args.n, args.seed, args.match, args.timeout)
+    import json
+
+    options = {"segmentation": json.loads(Path(args.seg_options).read_text())} if args.seg_options else None
+    run(args.n, args.seed, args.match, args.timeout, options=options)
     return 0
 
 

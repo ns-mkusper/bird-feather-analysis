@@ -365,6 +365,8 @@ def run_shard(
     local_state_path = os.path.join(metrics_dir, f"{run_id}_{_safe_node_label(node_id)}.json")
     events_jsonl_path = os.path.join(metrics_dir, f"{run_id}_{_safe_node_label(node_id)}_events.jsonl")
     stats_db_path = os.path.join(metrics_dir, "run_stats.sqlite3")
+    # per-feather output table for this node (one row per kept feather crop)
+    feathers_csv_path = os.path.join(metrics_dir, f"{run_id}_{_safe_node_label(node_id)}_feathers.csv")
     stats_conn = _init_stats_db(stats_db_path)
 
     local_state: dict[str, object] = {
@@ -485,11 +487,17 @@ def run_shard(
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
         if result.success:
             ok += 1
-        if labels is not None:
-            # Feather IDs of the crops actually kept (the retry may have won).
-            labels.feathers = result.feather_ids
-            lx.save_pipeline_result(labels, output_dir)
-            lx.upsert_labels(stats_conn, [labels], run_id, node_id=node_id)
+        slide = labels if labels is not None else (
+            lx.bare_result(path, result.feather_ids) if result.feather_ids else None)
+        if slide is not None:
+            # Feathers actually kept (the retry may have won), with their scores.
+            slide.feathers = result.feather_ids
+            if labels is not None:
+                lx.save_pipeline_result(labels, output_dir)
+            lx.upsert_labels(stats_conn, [slide], run_id, node_id=node_id)
+            lx.append_feathers_csv(slide, feathers_csv_path, run_id, node_id)
+            local_state["feathers_review"] = int(local_state.get("feathers_review", 0)) + sum(
+                bool(f.get("needs_review")) for f in result.feather_ids)
 
         local_state["processed"] = int(local_state["processed"]) + 1
         local_state["success"] = int(local_state["success"]) + (1 if result.success else 0)

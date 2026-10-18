@@ -16,7 +16,9 @@ def _write_labels(results: list[dict], label_dir: str) -> None:
 
     from src import label_extract as lx
 
-    labels = [lx.LabelResult.from_json(item["labels"]) for item in results if item.get("labels")]
+    labels = [lx.LabelResult.from_json(item["labels"]) if item.get("labels")
+              else lx.bare_result(item["image_path"], item["feather_ids"])
+              for item in results if item.get("labels") or item.get("feather_ids")]
     if not labels:
         return
     out = Path(label_dir)
@@ -26,7 +28,8 @@ def _write_labels(results: list[dict], label_dir: str) -> None:
             fh.write(json.dumps(r.to_json()) + "\n")
     summary = lx.finish_run(out, [r.image for r in labels], lx.load_config())
     print(f"Label table: {len(labels)} slides, {summary['needs_review']} need review, "
-          f"{summary['slides_with_model_error']} with model errors -> {out}")
+          f"{summary['slides_with_model_error']} with model errors; per-feather table "
+          f"{summary['feathers']} feathers -> {out / 'feathers.csv'}")
 
 
 def run_pipeline(input_dir: str, output_dir: str) -> None:

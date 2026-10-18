@@ -20,6 +20,22 @@ from ultralytics import SAM
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_VLM_MODEL = "mlx-community/Qwen3.8-27B-4bit"
+SEG_CONFIG = os.path.join(REPO_ROOT, "configs", "segmentation.json")
+
+
+def _deep_merge(base: dict, over: dict | None) -> dict:
+    out = dict(base)
+    for k, v in (over or {}).items():
+        out[k] = _deep_merge(out[k], v) if isinstance(v, dict) and isinstance(out.get(k), dict) else v
+    return out
+
+
+def load_seg_config(overrides: dict | None = None) -> dict:
+    """configs/segmentation.json (re-read per slide, so edits apply without a
+    restart), with per-task overrides on top."""
+    with open(SEG_CONFIG) as fh:
+        cfg = json.load(fh)
+    return _deep_merge(cfg, overrides)
 
 
 @dataclass
@@ -37,8 +53,10 @@ class ProcessResult:
     vlm_green_boxes_grouped_feathers: bool | None = None
     vlm_notes: str = ""
     processing_profile: str = "default"
-    # One entry per saved crop, left to right: seq (A, B, ...), feather_id
-    # (<bird_id>_<year>_<seq>), crop file name, and where bird_id/year came from.
+    # One record per saved crop, left to right: seq (A, B, ...), crop file,
+    # feather_id (<bird_id>_<period>_<seq>, when labels were read) with where
+    # bird_id/period came from, mask measurements, clean-up notes and the
+    # per-feather VLM judge result (judge_*).
     feather_ids: list = field(default_factory=list)
 
 
@@ -311,9 +329,11 @@ class FeatherProcessor:
             boxes_with_scores.append([b[0], b[1], b[2], b[3], float(score)])
         return boxes_with_scores
 
-    def _segment_sam3(self, image_path, img_pil, prompts, nms_iou, max_box_area_ratio, retry=False):
+    def _segment_sam3(self, image_path, img_pil, prompts, nms_iou, max_box_area_ratio, retry=False, conf=None):
         """SAM 3 concept segmentation: every instance matching the text prompts.
-        Returns (boxes, masks, failure_reason)."""
+        Returns (boxes, masks, failure_reason, scores)."""
+        if conf is not None and hasattr(self.sam3, "args"):
+            self.sam3.args.conf = float(conf)
         texts = [p.rstrip(".") for p in prompts]
         sources = [image_path]
         if retry:
@@ -334,14 +354,17 @@ class FeatherProcessor:
                                         res.masks.data.cpu().numpy()):
                         if (b[2] - b[0]) * (b[3] - b[1]) > img_area * max_box_area_ratio:
                             continue
+                        if conf is not None and float(sc) < float(conf):
+                            continue
                         boxes.append([float(v) for v in b]); scores.append(float(sc)); masks.append(m)
         finally:
             if retry:
                 os.unlink(sources[1])
         if not boxes:
-            return [], [], "no_masks"
+            return [], [], "no_masks", []
         keep = torchvision.ops.nms(torch.tensor(boxes), torch.tensor(scores), nms_iou)
-        return [boxes[int(i)] for i in keep], [masks[int(i)] for i in keep], ""
+        return ([boxes[int(i)] for i in keep], [masks[int(i)] for i in keep], "",
+                [scores[int(i)] for i in keep])
 
     def _segment_dino_sam2(self, image_path, img_pil, prompts, score_thresh, nms_iou, max_box_area_ratio, shrink):
         """Original path: Grounding DINO boxes, then SAM 2.1 masks for them."""
@@ -377,6 +400,7 @@ class FeatherProcessor:
         scores_tensor = torch.tensor([b[4] for b in boxes_with_scores], dtype=torch.float32)
         keep_indices = torchvision.ops.nms(boxes_tensor, scores_tensor, nms_iou)
         boxes = [boxes_with_scores[int(i)][:4] for i in keep_indices]
+        box_scores = [float(boxes_with_scores[int(i)][4]) for i in keep_indices]
 
         if not boxes:
             return [], [], "no_boxes_after_nms"
@@ -384,13 +408,18 @@ class FeatherProcessor:
         sam_results = self.sam_model(image_path, bboxes=boxes, device=self.device, verbose=False)
         sam_res = sam_results[0]
         if sam_res.masks is None:
-            return [], [], "no_masks"
-        return boxes, list(sam_res.masks.data.cpu().numpy()), ""
+            return [], [], "no_masks", []
+        return boxes, list(sam_res.masks.data.cpu().numpy()), "", box_scores
 
     def process_image(self, image_path: str, output_dir: str, profile: str = "default",
-                      labels=None) -> ProcessResult:
+                      labels=None, options: dict | None = None) -> ProcessResult:
         """`labels`: this slide's label result (extract_labels); when given, the
-        saved crops get feather IDs from its bird ID and year."""
+        saved crops get feather IDs from its bird ID and year. `options`:
+        {'segmentation': {...}} overrides configs/segmentation.json for this slide."""
+        from src import feather_judge
+        from src import segment_postprocess as sp
+
+        cfg = load_seg_config((options or {}).get("segmentation"))
         bird_id, date = self._infer_metadata(image_path)
         metadata_source = "filename"
         vlm_judge = {
@@ -405,25 +434,24 @@ class FeatherProcessor:
 
         try:
             img_pil = Image.open(image_path).convert("RGB")
-            score_thresh = 0.25
-            nms_iou = 0.3
-            max_box_area_ratio = 0.45
-            shrink = 0.02
-            prompts = ["bird feather."]
+            seg = cfg[self.segmenter]
+            prompts = list(seg["prompts"])
+            nms_iou, max_box_area_ratio = seg["nms_iou"], seg["max_box_area_ratio"]
+            score_thresh = seg.get("score_thresh", 0.25)
             if profile == "strict_retry":
                 # In retry mode, broaden detector recall for hard/dark feathers.
-                score_thresh = 0.2
-                nms_iou = 0.2
-                max_box_area_ratio = 0.45
-                shrink = 0.02
-                prompts.extend(["dark bird feather.", "black feather."])
+                score_thresh = min(score_thresh, 0.2)
+                nms_iou = min(nms_iou, 0.2)
+                prompts.extend(seg.get("retry_prompts", []))
 
             if self.segmenter == "sam3":
-                boxes, mask_list, reason = self._segment_sam3(
-                    image_path, img_pil, prompts, nms_iou, max_box_area_ratio, retry=(profile == "strict_retry"))
+                out = self._segment_sam3(image_path, img_pil, prompts, nms_iou, max_box_area_ratio,
+                                         retry=(profile == "strict_retry"), conf=seg.get("conf"))
             else:
-                boxes, mask_list, reason = self._segment_dino_sam2(
-                    image_path, img_pil, prompts, score_thresh, nms_iou, max_box_area_ratio, shrink)
+                out = self._segment_dino_sam2(image_path, img_pil, prompts, score_thresh, nms_iou,
+                                              max_box_area_ratio, seg.get("shrink", 0.02))
+            boxes, mask_list, reason = out[:3]
+            mask_scores = list(out[3]) if len(out) > 3 else [1.0] * len(mask_list)
             if reason:
                 return ProcessResult(
                     image_path=image_path,
@@ -436,25 +464,39 @@ class FeatherProcessor:
 
             img = cv2.imread(image_path)
             feathers: list[dict] = []
+            full_masks = [cv2.resize(m.astype(np.float32), (img.shape[1], img.shape[0])) > 0.5 for m in mask_list]
+            # one mask per feather: merge slivers/split pieces, drop contained duplicates
+            pieces = sp.clean_masks(full_masks, mask_scores, cfg.get("postprocess"))
+            trim = float(cfg["crop"].get("trim_bottom_frac", 0.12))
+            min_part = sp.DEFAULTS["min_area_frac"] * img.shape[0] * img.shape[1] * 0.25
 
-            for mask in mask_list:
-                mask_resized = cv2.resize(mask.astype(np.float32), (img.shape[1], img.shape[0]))
-                binary_mask = (mask_resized > 0.5).astype(np.uint8)
+            for piece in pieces:
+                binary_mask = piece.mask.astype(np.uint8)
                 contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                # all parts of a merged feather (pieces across a board edge), not just the largest
+                contours = [c for c in contours if cv2.contourArea(c) >= min_part] or \
+                    ([max(contours, key=cv2.contourArea)] if contours else [])
                 if not contours:
                     continue
-
-                contour = max(contours, key=cv2.contourArea)
-                x, y, w, h = cv2.boundingRect(contour)
-                y_max = y + h - int(h * 0.12)
+                x, y, w, h = cv2.boundingRect(np.vstack(contours))
+                y_max = y + h - int(h * trim)
 
                 final_mask = np.zeros_like(img)
-                cv2.drawContours(final_mask, [contour], -1, (255, 255, 255), -1)
+                cv2.drawContours(final_mask, contours, -1, (255, 255, 255), -1)
                 final_mask[y_max:, :] = 0
 
                 clean_feather = cv2.bitwise_and(img, final_mask)
                 feather_crop = clean_feather[y:y_max, x : x + w]
-                feathers.append({"x": x, "crop": feather_crop})
+                stats = sp.shape_stats(piece.mask)
+                feathers.append({"x": x, "crop": feather_crop, "mask": final_mask[:, :, 0] > 0,
+                                 "record": {"bbox": [x, y, x + w, y_max], "area_px": stats["area"],
+                                            "length_px": round(stats["length"]), "width_px": round(stats["width"]),
+                                            "angle_deg": round(stats["angle"], 1),
+                                            "touches_border": bool(x <= 2 or y <= 2 or x + w >= img.shape[1] - 2
+                                                                   or y + h >= img.shape[0] - 2),
+                                            "sam_score": round(float(piece.score), 3),
+                                            "sam_masks": len(piece.sources),
+                                            "postprocess": "; ".join(piece.notes)}})
 
             if not feathers:
                 return ProcessResult(
@@ -495,14 +537,12 @@ class FeatherProcessor:
                         pass
             # Create a simple visual QA overlay for VLM judgment and notebook preview.
             overlay = img.copy()
-            for mask in mask_list:
-                mask_resized = cv2.resize(mask.astype(np.float32), (img.shape[1], img.shape[0]))
-                binary_mask = (mask_resized > 0.5).astype(np.uint8)
-                green = np.zeros_like(overlay)
-                green[:, :, 1] = 255  # Green mask
-                overlay = np.where(binary_mask[:, :, None] == 1, cv2.addWeighted(overlay, 0.5, green, 0.5, 0), overlay)
-            for b in boxes:
-                x1, y1, x2, y2 = [int(v) for v in b]
+            green = np.zeros_like(overlay)
+            green[:, :, 1] = 255  # Green mask
+            for piece in pieces:
+                overlay = np.where(piece.mask[:, :, None], cv2.addWeighted(overlay, 0.5, green, 0.5, 0), overlay)
+            for f in feathers:
+                x1, y1, x2, y2 = f["record"]["bbox"]
                 cv2.rectangle(overlay, (x1, y1), (x2, y2), (0, 0, 255), 2)  # Red bounding boxes
             
             bbox_filename = on.overlay_name(names)
@@ -522,8 +562,11 @@ class FeatherProcessor:
             if (bird_id == "UNKNOWN" or date == "UNKNOWN") and metadata_source != "vlm_fallback":
                 metadata_source = "unknown"
 
-            feathers_to_save = feathers[:5]
-            saved_names = []
+            feathers_to_save = feathers[: int(cfg["crop"].get("max_feathers", 8))]
+            saved_names, records = [], []
+            jcfg = cfg.get("feather_judge", {})
+            judge_client = self.label_client() if jcfg.get("enabled") else None
+            qc_dir = os.path.join(output_dir, "feather_qc")
             for idx, feather in enumerate(feathers_to_save, start=1):
                 crop = feather["crop"]
                 img_yuv = cv2.cvtColor(crop, cv2.COLOR_BGR2YUV)
@@ -533,11 +576,26 @@ class FeatherProcessor:
                 filename = on.crop_name(names, idx - 1)
                 cv2.imwrite(os.path.join(output_dir, filename), crop_eq)
                 saved_names.append(filename)
-            feather_ids = []
+                rec = {"seq": on.seq_letter(idx - 1), "crop": filename, **feather["record"]}
+                if judge_client is not None:
+                    # per-feather segmentation score; the panel is kept for review
+                    res, panel = feather_judge.judge(judge_client, img, feather["mask"], crop_eq, jcfg)
+                    os.makedirs(qc_dir, exist_ok=True)
+                    qc_name = filename[:-4] + "_qc.jpg"
+                    panel.save(os.path.join(qc_dir, qc_name), quality=85)
+                    rec.update({"judge_" + k: v for k, v in res.items()})
+                    rec["qc_image"] = f"feather_qc/{qc_name}"
+                else:
+                    rec["judge_status"] = "disabled"
+                rec["needs_review"] = feather_judge.needs_review(rec)
+                records.append(rec)
+            feather_ids = records
             if labels is not None:
                 from src import label_extract as lx
 
-                feather_ids = lx.assign_feather_ids(labels, saved_names, names["period"])
+                ids = lx.assign_feather_ids(labels, saved_names, names["period"])
+                feather_ids = [{**rec, **fid} for rec, fid in zip(records, ids)]
+                labels.feathers = feather_ids
 
             vlm_score = (
                 float(vlm_judge["quality_score_1_to_10"])

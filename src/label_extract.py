@@ -175,7 +175,7 @@ class LabelResult:
             out[k] = export_value(v, st)
             out[f"{k}_status"] = st
         out["feather_count"] = len(self.feathers) if self.feathers else None
-        out["feather_ids"] = ";".join(f["feather_id"] for f in self.feathers)
+        out["feather_ids"] = ";".join(f.get("feather_id") or "" for f in self.feathers)
         return out
 
     def id_parts(self) -> dict:
@@ -753,20 +753,44 @@ CREATE TABLE IF NOT EXISTS specimen_labels (
 )"""
 
 
-FEATHER_SQL = """
-CREATE TABLE IF NOT EXISTS specimen_feathers (
-    run_id TEXT NOT NULL,
-    node_id TEXT NOT NULL,
-    file_id TEXT NOT NULL,
-    seq TEXT NOT NULL,
-    feather_id TEXT,
-    duplicate_of TEXT,
-    period TEXT,
-    bird_id TEXT, bird_id_source TEXT, bird_id_status TEXT,
-    year TEXT, year_source TEXT, year_status TEXT,
-    crop TEXT,
-    PRIMARY KEY (run_id, node_id, file_id, seq)
-)"""
+# The per-feather output table: one row per kept feather crop, with the
+# slide's label fields, the segmentation measurements and the VLM judge.
+FEATHER_TABLE_COLS = [
+    "run_id", "node_id", "file_id", "feather_id", "seq", "duplicate_of", "needs_review", "label_needs_review",
+    "bird_id", "bird_id_status", "bird_id_source", "species", "species_status", "age", "age_status",
+    "sex", "sex_status", "year", "month", "day", "date_status", "year_source", "period",
+    "crop", "qc_image", "bbox", "area_px", "length_px", "width_px", "angle_deg", "touches_border",
+    "sam_score", "sam_masks", "postprocess",
+    "judge_status", "judge_score", "judge_complete", "judge_single_feather", "judge_fragment",
+    "judge_missing_part", "judge_background_included", "judge_other_feather_included", "judge_notes", "judge_error",
+]
+FEATHER_SQL = ("CREATE TABLE IF NOT EXISTS specimen_feathers (\n    "
+               + ",\n    ".join(f"{c} TEXT" + (" NOT NULL" if c in ("run_id", "node_id", "file_id", "seq") else "")
+                                 for c in FEATHER_TABLE_COLS)
+               + ",\n    PRIMARY KEY (run_id, node_id, file_id, seq)\n)")
+
+
+def feather_table_rows(r: "LabelResult", run_id: str = "", node_id: str = "") -> list[dict]:
+    """Rows of the per-feather table for one slide (label fields repeated per feather)."""
+    slide = r.row()
+    parts = r.id_parts() if r.fields else {}
+    rows = []
+    for f in r.feathers:
+        row = {c: None for c in FEATHER_TABLE_COLS}
+        row.update({"run_id": run_id, "node_id": node_id or r.node, "file_id": r.file_id,
+                    "label_needs_review": slide.get("needs_review")})
+        for c in ("species", "species_status", "age", "age_status", "sex", "sex_status",
+                  "year", "month", "day", "date_status"):
+            row[c] = slide.get(c)
+        row["bird_id"] = f.get("bird_id") or parts.get("bird_id") or slide.get("bird_id")
+        row["bird_id_status"] = slide.get("bird_id_status")
+        row["bird_id_source"] = f.get("bird_id_source") or parts.get("bird_id_source")
+        for c in FEATHER_TABLE_COLS:
+            if c in f and c not in ("bird_id",):
+                v = f[c]
+                row[c] = json.dumps(v) if isinstance(v, (list, dict)) else v
+        rows.append(row)
+    return rows
 
 
 def _expected_cols(sql: str) -> set[str]:
@@ -812,19 +836,16 @@ def upsert_labels(conn: sqlite3.Connection, results: list[LabelResult], run_id: 
         for k, (v, st) in r.date_parts().items():
             row[k] = export_value(v, st)
         row["feather_count"] = len(r.feathers) if r.feathers else None
-        row["feather_ids"] = ";".join(f["feather_id"] for f in r.feathers)
+        row["feather_ids"] = ";".join(f.get("feather_id") or "" for f in r.feathers)
         cols = list(row)
         conn.execute(f"INSERT OR REPLACE INTO specimen_labels ({','.join(cols)}) "
                      f"VALUES ({','.join('?' * len(cols))})", [row[c] for c in cols])
         conn.execute("DELETE FROM specimen_feathers WHERE run_id=? AND node_id=? AND file_id=?",
                      (run_id, row["node_id"], r.file_id))
-        for f in r.feathers:
-            frow = {"run_id": run_id, "node_id": row["node_id"], "file_id": r.file_id,
-                    **{k: f.get(k) for k in ("seq", "feather_id", "duplicate_of", "period", "bird_id", "bird_id_source", "bird_id_status",
-                                             "year", "year_source", "year_status", "crop")}}
-            fc = list(frow)
-            conn.execute(f"INSERT OR REPLACE INTO specimen_feathers ({','.join(fc)}) "
-                         f"VALUES ({','.join('?' * len(fc))})", [frow[c] for c in fc])
+        for frow in feather_table_rows(r, run_id, row["node_id"]):
+            conn.execute(f"INSERT OR REPLACE INTO specimen_feathers ({','.join(FEATHER_TABLE_COLS)}) "
+                         f"VALUES ({','.join('?' * len(FEATHER_TABLE_COLS))})",
+                         [None if frow[c] is None else str(frow[c]) for c in FEATHER_TABLE_COLS])
     conn.commit()
 
 
@@ -1055,16 +1076,36 @@ def run_distributed(chosen: list[str], out: Path, remote_output_dir: str | None 
         log(f"  TIMEOUT {Path(p).name}: still queued or running; rerun to collect it")
 
 
-def write_feathers_csv(results: list[LabelResult], path: Path) -> Path:
-    cols = ["file_id", "seq", "feather_id", "duplicate_of", "period", "bird_id", "bird_id_source",
-            "bird_id_status", "year", "year_source", "year_status", "crop"]
+def write_feathers_csv(results: list[LabelResult], path: Path, run_id: str = "") -> Path:
+    """The per-feather output table (FEATHER_TABLE_COLS), one row per feather."""
     with open(path, "w", newline="") as fh:
-        w = csv.DictWriter(fh, fieldnames=cols)
+        w = csv.DictWriter(fh, fieldnames=FEATHER_TABLE_COLS)
         w.writeheader()
         for r in results:
-            for f in r.feathers:
-                w.writerow({"file_id": r.file_id, **{k: f.get(k) for k in cols[1:]}})
+            w.writerows(feather_table_rows(r, run_id))
     return path
+
+
+def append_feathers_csv(r: LabelResult, path: str | Path, run_id: str = "", node_id: str = "") -> None:
+    """Appends one slide's feathers to a per-feather CSV (header on first write)."""
+    path = Path(path)
+    new = not path.exists()
+    with open(path, "a", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=FEATHER_TABLE_COLS)
+        if new:
+            w.writeheader()
+        w.writerows(feather_table_rows(r, run_id, node_id))
+
+
+def bare_result(image_path: str, feathers: list[dict]) -> LabelResult:
+    """A slide without a label reading (labels disabled): feathers only."""
+    r = LabelResult(str(image_path), filename=parse_filename(Path(image_path).name), node=socket.gethostname())
+    if feathers and not all(f.get("feather_id") for f in feathers):
+        # feather IDs from the file name's ID and year (the label could not be read)
+        ids = assign_feather_ids(r, [f["crop"] for f in feathers], period_of_crop(feathers[0]["crop"]))
+        feathers = [{**f, **i} for f, i in zip(feathers, ids)]
+    r.feathers = feathers
+    return r
 
 
 def load_gold(gold_csv: str | Path) -> dict[str, dict]:
@@ -1133,7 +1174,7 @@ def finish_run(out: Path, chosen: list[str], cfg: dict, gold: str | Path | None 
         dup_rows = feather_duplicates.apply_to_results(results, segmentation_dir)
         if dup_rows:
             feather_duplicates.write_csv(dup_rows, out / "feather_duplicates.csv")
-    write_feathers_csv(results, out / "feathers.csv")
+    write_feathers_csv(results, out / "feathers.csv", out.name)
     write_csv(results, out / "labels.csv")
     write_review_csv(results, out / "review.csv")
     write_sqlite(results, out / "labels.sqlite3", out.name, cfg["vlm"]["model"])

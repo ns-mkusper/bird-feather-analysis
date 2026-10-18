@@ -41,12 +41,14 @@ def _label_client():
 
 
 @celery_app.task(bind=True, name="src.celery_tasks.process_image", autoretry_for=(Exception,), retry_backoff=True, retry_kwargs={"max_retries": 2})
-def process_image(self, image_path: str, output_dir: str) -> dict:
+def process_image(self, image_path: str, output_dir: str, options: dict | None = None) -> dict:
+    """`options`: {'segmentation': {...}} overrides configs/segmentation.json
+    for this task (sample runs try settings without redeploying)."""
     processor = _get_processor()
     # Label table first, from the original slide; cached per output dir, so a
     # retry of this task does not ask the model again.
     labels = processor.extract_labels(image_path, output_dir)
-    result = processor.process_image(image_path=image_path, output_dir=output_dir, labels=labels)
+    result = processor.process_image(image_path=image_path, output_dir=output_dir, labels=labels, options=options)
     if labels is not None:
         # cache the feather IDs with the slide's label result
         from src import label_extract as lx
