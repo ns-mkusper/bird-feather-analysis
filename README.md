@@ -107,7 +107,14 @@ python -m src.submit_remote_pipeline \
   `CE01168 2008_BoundingBoxes.jpg` and crops `CE01168_2008_Feather_A.jpg`, `..._B.jpg`, ... (A = leftmost),
   from the file name's ID and year. A bird with several slides in one year (63 slides) uses the full
   label date instead of the year, in file names and feather IDs (`BB17692_19980612_Feather_A.jpg`,
-  `BB17692H_19980612_A`); the image number only when that date cannot be read. Lookups also find the older
+  `BB17692H_19980612_A`); slides of the same bird from the same day also get the image number
+  (`A0514_20000521-im1163_Feather_A.jpg`), as do slides whose own date cannot be read.
+- **Duplicate feathers** (`src/feather_duplicates.py`): same-day slides of one bird often repeat a
+  feather in another order, position or rotation. Each repeat gets `duplicate_of` (the first
+  occurrence: earliest image number, then letter) in `feathers.csv`, `specimen_feathers` and
+  `feather_duplicates.csv`. Matching uses feather size plus SIFT keypoints fitted to one
+  rotation/shift (mirror images too). Post-run on gathered outputs:
+  `python -m src.feather_duplicates <processed_dir>`. Lookups also find the older
   `<slide>_<id>_<date>_Feather_<n>.jpg` names of earlier runs.
   The model is served by `pixi run vlm-server`; point `FEATHER_VLM_ENDPOINTS` at it.
 - **Label table in cluster runs**: every `process_image` task (Celery) and every sharded run

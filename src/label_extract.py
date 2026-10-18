@@ -760,6 +760,7 @@ CREATE TABLE IF NOT EXISTS specimen_feathers (
     file_id TEXT NOT NULL,
     seq TEXT NOT NULL,
     feather_id TEXT,
+    duplicate_of TEXT,
     period TEXT,
     bird_id TEXT, bird_id_source TEXT, bird_id_status TEXT,
     year TEXT, year_source TEXT, year_status TEXT,
@@ -819,7 +820,7 @@ def upsert_labels(conn: sqlite3.Connection, results: list[LabelResult], run_id: 
                      (run_id, row["node_id"], r.file_id))
         for f in r.feathers:
             frow = {"run_id": run_id, "node_id": row["node_id"], "file_id": r.file_id,
-                    **{k: f.get(k) for k in ("seq", "feather_id", "period", "bird_id", "bird_id_source", "bird_id_status",
+                    **{k: f.get(k) for k in ("seq", "feather_id", "duplicate_of", "period", "bird_id", "bird_id_source", "bird_id_status",
                                              "year", "year_source", "year_status", "crop")}}
             fc = list(frow)
             conn.execute(f"INSERT OR REPLACE INTO specimen_feathers ({','.join(fc)}) "
@@ -1055,8 +1056,8 @@ def run_distributed(chosen: list[str], out: Path, remote_output_dir: str | None 
 
 
 def write_feathers_csv(results: list[LabelResult], path: Path) -> Path:
-    cols = ["file_id", "seq", "feather_id", "period", "bird_id", "bird_id_source", "bird_id_status",
-            "year", "year_source", "year_status", "crop"]
+    cols = ["file_id", "seq", "feather_id", "duplicate_of", "period", "bird_id", "bird_id_source",
+            "bird_id_status", "year", "year_source", "year_status", "crop"]
     with open(path, "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=cols)
         w.writeheader()
@@ -1125,12 +1126,19 @@ def finish_run(out: Path, chosen: list[str], cfg: dict, gold: str | Path | None 
     results = [final[Path(p).name] for p in chosen if Path(p).name in final]
     if segmentation_dir and Path(segmentation_dir).exists():
         attach_feathers_from_crops(results, segmentation_dir, siblings)
+        from src import feather_duplicates
+
+        dup_rows = feather_duplicates.apply_to_results(results, segmentation_dir)
+        if dup_rows:
+            feather_duplicates.write_csv(dup_rows, out / "feather_duplicates.csv")
     write_feathers_csv(results, out / "feathers.csv")
     write_csv(results, out / "labels.csv")
     write_review_csv(results, out / "review.csv")
     write_sqlite(results, out / "labels.sqlite3", out.name, cfg["vlm"]["model"])
     summary = summarize(results)
     summary["slides_with_feather_ids"] = sum(bool(r.feathers) for r in results)
+    summary["feathers"] = sum(len(r.feathers) for r in results)
+    summary["duplicate_feathers"] = sum(bool(f.get("duplicate_of")) for r in results for f in r.feathers)
     if gold and Path(gold).exists():
         summary["gold"] = score_against_gold(results, gold, cfg)
         summary["gold_feather_count"] = score_feather_counts(results, gold)
