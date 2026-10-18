@@ -89,6 +89,16 @@ python -m src.submit_remote_pipeline \
   Regions, prompts and format rules live in `configs/label_fields.json`; edit and re-run, no
   restart. Hand-checked answers in `data/label_gold.csv` give per-field accuracy on every run.
   CLI: `pixi run labels -- --sample 10 --seed 1`, all slides: `pixi run labels-all`.
+  Fixed 30-slide benchmark (spread over ID prefixes and years, scored against the gold file):
+  `pixi run labels -- --manifest configs/label_sample_30.txt --gold data/label_gold.csv`.
+  Each field tries its primary crop, an expanded crop, then wider `fallback_regions`; the ID and
+  date are read twice and disagreements go to review. `file_id` (the file name) and
+  `individual_id` (the code printed on the label) are separate columns; the ID and year parsed
+  from the file name are only a cross-check or a labelled `filename_fallback`. `N/A` means the
+  field is not on the slide; a failed model request is `model_error` and stays blank. A run
+  directory holds `labels.csv`, `review.csv`, `labels.jsonl` (full detail), `labels.sqlite3`
+  (`specimen_labels` table), `summary.json` and the evidence crops; rerunning with the same
+  `--out` skips finished slides and retries model errors.
   The model is served by `pixi run vlm-server`; point `FEATHER_VLM_ENDPOINTS` at it.
 - **Sample segmentation runs**: `pixi run sample-run -- --n 5` (or `--match "A0012 1996"`) sends
   slides through the workers' normal pipeline and copies the outputs to `data/sample_runs/`.

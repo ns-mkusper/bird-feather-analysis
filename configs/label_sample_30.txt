@@ -1,0 +1,33 @@
+# 30-slide label sample: A0012 sample slide, 2 odd file names, then slots per ID prefix
+# in proportion to the collection, spread over years. Regenerate with:
+#   python -m src.label_extract --stratified 30 --seed 1 --write-manifest configs/label_sample_30.txt
+A0012 1996-im1058.jpg
+BX40 368 2004-im1800.jpg
+BX40 398 2003-im1818.jpg
+A3681 2001-im1686.jpg
+A2404 2000-im1494.jpg
+A2218 1998-im1452.jpg
+A1323 1997-im1302.jpg
+A2434 1999-im1507.jpg
+A3818 2002-im1708.jpg
+A1340 2005-im1313.jpg
+A3944 2006-im1720.jpg
+BB18346 1994-im0622.jpg
+BB18441 1995-im0645.jpg
+BB18024 1993-im0580.jpg
+BB17280 1992-im0412.jpg
+BD31002 1995-im0671.jpg
+BD31940 1996-im0912.jpg
+BD31768 1994-im0838.jpg
+BZ11933 2007-im2197.jpg
+BZ11744 2008-im2397.jpg
+BZ10105 2003-im1989.jpg
+BX41024 2006-im1948.jpg
+BX40683 2005-im1883.jpg
+BX40715 2004-im1892.jpg
+AX87015 1991-img0203.jpg
+AX87168 1990-im2328.jpg
+CE01168 2008-im2346.jpg
+BH64128 1966-im1010.jpg
+AS93157 1990-im0096.jpg
+AR36456 1993-im0062.jpg

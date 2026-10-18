@@ -1,5 +1,5 @@
 {
-  "_comment": "Regions are fractions of the ORIGINAL slide image: [left, top, right, bottom]. They are deliberately generous because the label shifts a little from slide to slide. 'pattern' validates the normalized value; a value that fails it is kept but marked invalid_format. Edit freely and rerun the lab notebook. VLM endpoints can be overridden with FEATHER_VLM_ENDPOINTS in .env.",
+  "_comment": "Regions are fractions of the ORIGINAL slide image: [left, top, right, bottom]. They are deliberately generous because the label shifts a little from slide to slide. 'pattern' validates the normalized value; a value that fails it is kept but marked invalid_format. Edit freely and rerun the lab notebook. VLM endpoints can be overridden with FEATHER_VLM_ENDPOINTS in .env. 'fallback_regions' are wider crops tried in order when the primary and expanded crops give no readable value; 'verify' re-reads a readable value on a second crop and sends disagreements to review. expand_margin is [x, y] added on each side for the 'expanded' crop.",
   "vlm": {
     "endpoints": [
       "http://localhost:8790"
@@ -7,7 +7,9 @@
     "model": "mlx-community/Qwen3.8-27B-4bit",
     "max_tokens": 120,
     "temperature": 0,
-    "crop_max_side": 1024
+    "crop_max_side": 1024,
+    "retries": 2,
+    "timeout": 180
   },
   "fields": {
     "individual_id": {
@@ -19,7 +21,16 @@
       ],
       "prompt": "This crop shows a large black bird ID code on a white label, formatted like 'A 0012 H' or 'BB 17692' (1-2 letters, 4-5 digits, optional trailing letter). Read it exactly.",
       "pattern": "^[A-Z]{1,2}\\d{4,5}[A-Z]?$",
-      "normalize": "remove_spaces_upper"
+      "normalize": "remove_spaces_upper",
+      "fallback_regions": [
+        [
+          0.1,
+          0.0,
+          0.9,
+          0.22
+        ]
+      ],
+      "verify": true
     },
     "species": {
       "region": [
@@ -30,7 +41,16 @@
       ],
       "prompt": "This crop shows a row with a 5-letter species code in capitals (e.g. HAFLU), possibly followed by an unrelated note such as '3K+' on the right. Return ONLY the 5-letter species code, not the note.",
       "pattern": "^[A-Z]{4,6}$",
-      "normalize": "remove_spaces_upper"
+      "normalize": "remove_spaces_upper",
+      "fallback_regions": [
+        [
+          0.1,
+          0.03,
+          0.9,
+          0.25
+        ]
+      ],
+      "verify": false
     },
     "age": {
       "region": [
@@ -41,7 +61,16 @@
       ],
       "prompt": "This crop shows the age code in a coloured box at the top-left of a specimen label, like '2K+', '1K' or '3K'. Return only that code.",
       "pattern": "^\\d{1,2}K\\+?$",
-      "normalize": "remove_spaces_upper"
+      "normalize": "remove_spaces_upper",
+      "fallback_regions": [
+        [
+          0.0,
+          0.0,
+          0.5,
+          0.25
+        ]
+      ],
+      "verify": false
     },
     "sex": {
       "region": [
@@ -52,7 +81,16 @@
       ],
       "prompt": "This crop shows a single letter for the bird's sex in a grey box at the top-right of a specimen label (usually M or F). Return only that letter.",
       "pattern": "^[MFU]$",
-      "normalize": "remove_spaces_upper"
+      "normalize": "remove_spaces_upper",
+      "fallback_regions": [
+        [
+          0.55,
+          0.0,
+          1.0,
+          0.28
+        ]
+      ],
+      "verify": false
     },
     "feather": {
       "region": [
@@ -64,7 +102,15 @@
       "prompt": "This crop shows a line of red text describing the feather, near the top of a specimen slide. Part of it may be hidden under a black board or feathers. Transcribe only the characters you can actually see in THIS image; put '...' where text is hidden. Do not invent or complete words.",
       "pattern": null,
       "normalize": "strip",
-      "allow_partial": true
+      "allow_partial": true,
+      "fallback_regions": [
+        [
+          0.0,
+          0.1,
+          1.0,
+          0.35
+        ]
+      ]
     },
     "date": {
       "region": [
@@ -75,8 +121,28 @@
       ],
       "prompt": "This crop shows a date in blue text at the bottom-right of a specimen slide, formatted YYYY-MM-DD. Return only the date.",
       "pattern": "^(19|20)\\d{2}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])$",
-      "normalize": "date"
+      "normalize": "date",
+      "fallback_regions": [
+        [
+          0.45,
+          0.75,
+          1.0,
+          1.0
+        ],
+        [
+          0.0,
+          0.75,
+          1.0,
+          1.0
+        ]
+      ],
+      "verify": true
     }
   },
-  "answer_rules": "Answer with JSON only: {\"value\": <text or null>, \"visible\": \"yes\" | \"partly\" | \"no\", \"confidence\": <0-1>}. Use visible=no and value=null ONLY if that text is truly absent or fully covered in the crop; never guess characters you cannot see."
+  "answer_rules": "Answer with JSON only: {\"value\": <text or null>, \"visible\": \"yes\" | \"partly\" | \"no\", \"confidence\": <0-1>}. Use visible=no and value=null ONLY if that text is truly absent or fully covered in the crop; never guess characters you cannot see.",
+  "expand_margin": [
+    0.06,
+    0.04
+  ],
+  "filename_fallback": true
 }
