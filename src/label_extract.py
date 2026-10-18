@@ -250,16 +250,45 @@ def feather_id(bird_id: str, period: str, index: int) -> str:
     return f"{bird_id}_{period}_{seq_letter(index)}"
 
 
-def feather_period(result: "LabelResult", siblings: list[str] | None) -> str:
-    """Year, or the label date as YYYYMMDD when another slide in `siblings`
-    has the same file-name ID and year (image number if that date is unknown)."""
+def result_date(r: "LabelResult") -> str | None:
+    d = r.fields.get("date")
+    return d.value if d is not None and d.status not in ("model_error", "not_found") else None
+
+
+def feather_period(result: "LabelResult", siblings: list[str] | None,
+                   sibling_dates: dict[str, str | None] | None = None) -> str:
+    """The period in feather IDs and file names: the year; the label date as
+    YYYYMMDD when another slide in `siblings` has the same file-name ID and
+    year; plus the image number when a sibling has the same (or an unknown)
+    date. Same rule as output_names.output_names."""
+    from src.output_names import output_names
+
     parts = result.id_parts()
-    if siblings and shares_id_year(result.file_id, siblings):
-        d = result.fields.get("date")
-        full = compact_date(d.value) if d is not None and d.status != "model_error" else None
-        tag = Path(result.file_id).stem.lstrip("-").split("-", 1)[-1]
-        return full or f"{parts['year']}-{tag}"
-    return parts["year"]
+    if not siblings or not shares_id_year(result.file_id, siblings):
+        return parts["year"]
+    return output_names(result.file_id, siblings, result_date(result), sibling_dates)["period"]
+
+
+def slide_date(image_path: str | Path, output_dir: str | Path, client, cfg: dict | None = None) -> str | None:
+    """The label date of a slide, for naming its same-year siblings: from the
+    slide's pipeline result if there is one, else a date-only reading cached
+    as <output_dir>/labels/<stem>.date.json."""
+    label_dir = Path(output_dir) / "labels"
+    stem = Path(image_path).stem
+    for p in (label_dir / f"{stem}.json", label_dir / f"{stem}.date.json"):
+        try:
+            r = LabelResult.from_json(json.loads(p.read_text()))
+            if "date" in r.fields and r.fields["date"].status != "model_error":
+                return result_date(r)
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+    try:
+        r = extract(image_path, cfg, client, fields=["date"])
+    except Exception:  # noqa: BLE001
+        return None
+    label_dir.mkdir(parents=True, exist_ok=True)
+    (label_dir / f"{stem}.date.json").write_text(json.dumps(r.to_json()))
+    return result_date(r)
 
 
 def assign_feather_ids(result: "LabelResult", crops: list[str], period: str | None = None) -> list[dict]:
@@ -280,11 +309,12 @@ def attach_feathers_from_crops(results: list["LabelResult"], crops_dir: str | Pa
     current or the older file names, left to right). `siblings`: all slide
     file names, needed for older crop names to tell same-year slides apart."""
     n = 0
+    dates = {r.file_id: result_date(r) for r in results}
     for r in results:
         d = r.fields.get("date")
         crops = [str(p) for p in find_crops(crops_dir, r.file_id, d.value if d is not None else None)]
         if crops:
-            period = None if period_of_crop(crops[0]) else feather_period(r, siblings)
+            period = None if period_of_crop(crops[0]) else feather_period(r, siblings, dates)
             assign_feather_ids(r, crops, period)
             n += 1
     return n

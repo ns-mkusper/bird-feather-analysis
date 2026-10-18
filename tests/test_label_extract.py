@@ -324,5 +324,6 @@ def test_feather_ids_use_full_date_for_same_year_slides(tmp_path):
         (tmp_path / f"BB17692 1998-im0513_BB17692_1998_Feather_{n}.jpg").write_bytes(b"x")
     a, b = res("BB17692 1998-im0513.jpg", "1998-06-12"), res("BB17692 1998-im0514.jpg", None)
     lx.attach_feathers_from_crops([a, b], tmp_path, sib)
-    assert a.feathers[0]["feather_id"] == "BB17692H_19980612_A"
+    # the sibling's date is unknown, so it might be the same day -> image number
+    assert a.feathers[0]["feather_id"] == "BB17692H_19980612-im0513_A"
     assert b.feathers[1]["feather_id"] == "BB17692H_1998-im0514_B"

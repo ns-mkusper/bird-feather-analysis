@@ -149,7 +149,22 @@ def test_process_image_writes_new_names_left_to_right(tmp_path):
     assert a is not None and a.shape[1] <= 31
 
 
-def test_process_image_names_same_year_slides_by_label_date(tmp_path):
+class DateClient:
+    """Fake VLM: answers every date crop with a fixed date per slide image size."""
+    model_name = "fake"
+
+    def __init__(self, date):
+        self.date = date
+
+    def ask(self, image, prompt, timeout=None):
+        return json.dumps({"value": self.date, "visible": "yes", "confidence": 0.99})
+
+
+@pytest.mark.parametrize("sibling_date,expect_prefix", [
+    ("1998-06-20", "BB17692_19980612"),           # same year, other day -> date only
+    ("1998-06-12", "BB17692_19980612-im0513"),    # same day -> date + image number
+])
+def test_process_image_names_same_year_slides_by_label_date(tmp_path, sibling_date, expect_prefix):
     import numpy as np
     from src.feather_processing import FeatherProcessor
 
@@ -163,13 +178,35 @@ def test_process_image_names_same_year_slides_by_label_date(tmp_path):
     p = object.__new__(FeatherProcessor)
     p.segmenter, p.has_vlm, p.vlm_scoring_enabled, p.vlm_metadata_enabled = "sam3", False, False, False
     p._segment_sam3 = lambda *a, **k: ([[40, 20, 70, 180]], [m], "")
-    for name, date in (("BB17692 1998-im0513.jpg", "1998-06-12"), ("BB17692 1998-im0514.jpg", None)):
-        labels = lx.LabelResult(str(raw / name), filename=lx.parse_filename(name))
-        labels.fields["bird_id"] = lx.FieldResult("BB17692H", "readable")
-        labels.fields["date"] = lx.FieldResult(date, "readable" if date else "not_found")
-        res = p.process_image(str(raw / name), str(out), labels=labels)
-        assert res.success
-    names = sorted(f.name for f in out.iterdir())
-    assert names == ["BB17692 1998-im0514_BoundingBoxes.jpg", "BB17692 19980612_BoundingBoxes.jpg",
-                     "BB17692_1998-im0514_Feather_A.jpg", "BB17692_19980612_Feather_A.jpg"]
+    p._label_client = DateClient(sibling_date)          # the sibling's date reading
+    name = "BB17692 1998-im0513.jpg"
+    labels = lx.LabelResult(str(raw / name), filename=lx.parse_filename(name))
+    labels.fields["bird_id"] = lx.FieldResult("BB17692H", "readable")
+    labels.fields["date"] = lx.FieldResult("1998-06-12", "readable")
+    res = p.process_image(str(raw / name), str(out), labels=labels)
+    assert res.success, res.reason
+    assert (out / f"{expect_prefix}_Feather_A.jpg").exists()
+    assert res.feather_ids[0]["feather_id"] == f"BB17692H_{expect_prefix.split('_', 1)[1]}_A"
+    assert (out / "labels" / "BB17692 1998-im0514.date.json").exists()   # sibling date cached
+
+
+def test_process_image_unreadable_own_date_uses_image_number(tmp_path):
+    import numpy as np
+    from src.feather_processing import FeatherProcessor
+
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    for n in ("BB17692 1998-im0513.jpg", "BB17692 1998-im0514.jpg"):
+        Image.new("RGB", (300, 200), "white").save(raw / n)
+    m = np.zeros((200, 300), dtype=np.float32)
+    m[20:180, 40:70] = 1
+    p = object.__new__(FeatherProcessor)
+    p.segmenter, p.has_vlm, p.vlm_scoring_enabled, p.vlm_metadata_enabled = "sam3", False, False, False
+    p._segment_sam3 = lambda *a, **k: ([[40, 20, 70, 180]], [m], "")
+    name = "BB17692 1998-im0514.jpg"
+    labels = lx.LabelResult(str(raw / name), filename=lx.parse_filename(name))
+    labels.fields["bird_id"] = lx.FieldResult("BB17692H", "readable")
+    labels.fields["date"] = lx.FieldResult(None, "not_found")
+    res = p.process_image(str(raw / name), str(tmp_path / "out"), labels=labels)
     assert res.feather_ids[0]["feather_id"] == "BB17692H_1998-im0514_A"
+    assert (tmp_path / "out" / "BB17692_1998-im0514_Feather_A.jpg").exists()

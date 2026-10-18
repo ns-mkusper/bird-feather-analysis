@@ -12,7 +12,8 @@ def test_short_names_for_unique_bird_and_year():
 
 
 def test_same_bird_and_year_uses_full_label_date():
-    n = on.output_names("BB17692 1998-im0513.jpg", SIBLINGS, date="1998-06-12")
+    n = on.output_names("BB17692 1998-im0513.jpg", SIBLINGS, date="1998-06-12",
+                        sibling_dates={"BB17692 1998-im0514.jpg": "1998-06-20"})
     assert on.overlay_name(n) == "BB17692 19980612_BoundingBoxes.jpg"
     assert on.crop_name(n, 0) == "BB17692_19980612_Feather_A.jpg" and n["period"] == "19980612"
     # a unique bird/year ignores the date
@@ -83,3 +84,16 @@ def test_find_date_named_crops(tmp_path):
     assert on.find_overlay(tmp_path, "BB17692 1998-im0513.jpg").name == "BB17692 19980612_BoundingBoxes.jpg"
     assert on.find_crop(tmp_path, "BB17692", "1998").name == "BB17692_19980612_Feather_A.jpg"
     assert on.belongs_to("BB17692_19980612_Feather_A.jpg", "BB17692 1998-im0513.jpg", "1998-06-12")
+
+
+def test_same_day_slides_add_image_number():
+    sib = ["A0514 2000-im1163.jpg", "A0514 2000-im1164.jpg", "A0514 2000-im1165.jpg"]
+    dates = {"A0514 2000-im1164.jpg": "2000-05-21", "A0514 2000-im1165.jpg": "2000-07-02"}
+    n = on.output_names("A0514 2000-im1163.jpg", sib, "2000-05-21", dates)
+    assert n["crop_prefix"] == "A0514_20000521-im1163"
+    n = on.output_names("A0514 2000-im1165.jpg", sib, "2000-07-02",
+                        {"A0514 2000-im1163.jpg": "2000-05-21", "A0514 2000-im1164.jpg": "2000-05-21"})
+    assert n["crop_prefix"] == "A0514_20000702"
+    # a sibling whose date is unknown might be the same day -> image number
+    n = on.output_names("A0514 2000-im1165.jpg", sib, "2000-07-02", {"A0514 2000-im1163.jpg": None})
+    assert n["crop_prefix"] == "A0514_20000702-im1165"

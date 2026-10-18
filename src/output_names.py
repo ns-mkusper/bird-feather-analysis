@@ -7,9 +7,10 @@
 The ID and year come from the file name. Where one bird has several slides
 from the same year (63 of the 2406 slides), the year alone would be shared, so
 those slides use the full date read from the label instead:
-'BB17692 19980612_BoundingBoxes.jpg', 'BB17692_19980612_Feather_A.jpg'. If that
-date could not be read, the image number keeps them apart:
-'BB17692_1998-im0513_Feather_A.jpg'. File names that cannot be parsed keep
+'BB17692 19980612_BoundingBoxes.jpg', 'BB17692_19980612_Feather_A.jpg'. Slides
+of the same bird from the same DAY (or whose sibling's date is unknown) also
+get the image number: 'A0514_20000521-im1163_Feather_A.jpg'. If the slide's own
+date could not be read: 'BB17692_1998-im0513_Feather_A.jpg'. File names that cannot be parsed keep
 their stem. The same period (year / YYYYMMDD / year-imNNNN) goes into the
 feather IDs, so crop names and IDs line up.
 
@@ -74,11 +75,20 @@ def compact_date(date: str | None) -> str | None:
     return "".join(m.groups()) if m else None
 
 
-def output_names(name: str, siblings: list[str] | None = None, date: str | None = None) -> dict:
+def same_year_siblings(name: str, siblings: list[str]) -> list[str]:
+    """Other slides with the same file-name ID and year."""
+    key = _key(name)
+    return [] if key is None else sorted(s for s in siblings
+                                         if Path(s).name != Path(name).name and _key(s) == key)
+
+
+def output_names(name: str, siblings: list[str] | None = None, date: str | None = None,
+                 sibling_dates: dict[str, str | None] | None = None) -> dict:
     """{'base': 'CE01168 2008', 'crop_prefix': 'CE01168_2008', 'period': '2008'}.
     `siblings`: the other slide file names (default: the slide's own folder).
     `date`: the label date (YYYY-MM-DD), used when the bird has other slides
-    from the same year."""
+    from the same year. `sibling_dates`: label dates of those slides; a shared
+    or unknown one adds the image number."""
     name_only = Path(name).name
     if siblings is None:
         folder = os.path.dirname(str(name)) or "."
@@ -90,7 +100,14 @@ def output_names(name: str, siblings: list[str] | None = None, date: str | None 
     bird, year = key
     period = year
     if shares_id_year(name_only, siblings):
-        period = compact_date(date) or f"{year}-{_image_tag(name_only)}"
+        full = compact_date(date)
+        if full is None:
+            period = f"{year}-{_image_tag(name_only)}"
+        else:
+            sib = same_year_siblings(name_only, siblings)
+            known = sibling_dates or {}
+            same_day = any(compact_date(known.get(Path(s).name)) in (None, full) for s in sib)
+            period = f"{full}-{_image_tag(name_only)}" if same_day else full
     return {"base": f"{bird} {period}", "crop_prefix": f"{bird}_{period}", "period": period}
 
 
@@ -127,7 +144,9 @@ def _candidates(name: str, date: str | None = None) -> list[dict]:
     tag = _image_tag(name_only)
     out = []
     if compact_date(date):
-        out.append({"base": f"{bird} {compact_date(date)}", "crop_prefix": f"{bird}_{compact_date(date)}"})
+        full = compact_date(date)
+        out.append({"base": f"{bird} {full}-{tag}", "crop_prefix": f"{bird}_{full}-{tag}"})
+        out.append({"base": f"{bird} {full}", "crop_prefix": f"{bird}_{full}"})
     out += [{"base": f"{bird} {year}-{tag}", "crop_prefix": f"{bird}_{year}-{tag}"},
             {"base": f"{bird} {year}", "crop_prefix": f"{bird}_{year}"}]
     return out
@@ -198,6 +217,6 @@ def find_crop(out_dir: str | Path, bird_id: str, year: str, seq: str = "A") -> P
     exact = out_dir / f"{bird_id}_{year}_Feather_{seq}.jpg"
     if exact.exists():
         return exact
-    dated = sorted(out_dir.glob(f"{glob.escape(bird_id)}_{year}[0-9][0-9][0-9][0-9]_Feather_{seq}.jpg"))
+    dated = sorted(out_dir.glob(f"{glob.escape(bird_id)}_{year}[0-9][0-9][0-9][0-9]*_Feather_{seq}.jpg"))
     tagged = sorted(out_dir.glob(f"{glob.escape(bird_id)}_{year}-*_Feather_{seq}.jpg"))
     return (dated or tagged or [None])[0]

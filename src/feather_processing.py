@@ -474,8 +474,17 @@ class FeatherProcessor:
             if labels is not None and labels.fields.get("date") is not None \
                     and labels.fields["date"].status != "model_error":
                 label_date = labels.fields["date"].value
-            # 'CE01168 2008' / 'CE01168_2008'; full label date for same-year slides (see output_names.py)
-            names = on.output_names(image_path, date=label_date)
+            # 'CE01168 2008' / 'CE01168_2008'; full label date for same-year slides,
+            # plus the image number for same-day slides (see output_names.py)
+            input_dir = os.path.dirname(image_path) or "."
+            siblings = os.listdir(input_dir) if os.path.isdir(input_dir) else []
+            sibling_dates = None
+            if labels is not None and label_date and on.shares_id_year(image_path, siblings):
+                from src import label_extract as lx
+
+                sibling_dates = {s: lx.slide_date(os.path.join(input_dir, s), output_dir, self.label_client())
+                                 for s in on.same_year_siblings(image_path, siblings)}
+            names = on.output_names(image_path, siblings, date=label_date, sibling_dates=sibling_dates)
             source_name = os.path.basename(image_path)
             for old in os.listdir(output_dir):
                 # crops from an earlier attempt at this slide (new or old names)
