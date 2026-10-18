@@ -6,6 +6,8 @@ from PIL import Image
 from torch.nn.functional import cosine_similarity
 import subprocess
 
+from src.output_names import find_crop
+
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MANIFEST_PATH = os.path.join(BASE_DIR, 'data', 'metadata_manifest.csv')
 PROCESSED_DIR = os.path.join(BASE_DIR, 'data', 'processed')
@@ -33,9 +35,10 @@ def main():
             group = group.sort_values('date')
             dates = group['date'].tolist()
             
-            # Compare Gen 1 to Gen 2 (Feather 1)
-            crop1 = os.path.join(PROCESSED_DIR, f"{bird_id}_{dates[0]}_Feather_1.jpg")
-            crop2 = os.path.join(PROCESSED_DIR, f"{bird_id}_{dates[1]}_Feather_1.jpg")
+            # Compare Gen 1 to Gen 2 (leftmost feather, A): crops are named
+            # <file-name ID>_<year>_Feather_<letter>.jpg (src/output_names.py)
+            crop1 = str(find_crop(PROCESSED_DIR, bird_id, str(dates[0])[:4], "A") or "")
+            crop2 = str(find_crop(PROCESSED_DIR, bird_id, str(dates[1])[:4], "A") or "")
             
             # Simulated Identical Control: "Zero-Distance" baseline
             crop_control1 = crop1

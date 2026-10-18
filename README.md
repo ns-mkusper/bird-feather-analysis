@@ -103,6 +103,11 @@ python -m src.submit_remote_pipeline \
   from segmentation: workers assign them to the crops they keep (`specimen_feathers` table);
   for a label-only run pass `--segmentation-dir data/sample_runs/<id>` from `pixi run sample-run`.
   The red/blue text line under the label boxes and the code above the date are ignored.
+- **Output file names** (`src/output_names.py`): slide `CE01168 2008-im2346.jpg` gives
+  `CE01168 2008_BoundingBoxes.jpg` and crops `CE01168_2008_Feather_A.jpg`, `..._B.jpg`, ... (A = leftmost),
+  from the file name's ID and year. A bird with several slides in one year (63 slides) keeps the
+  image number: `BB17692_1998-im0513_Feather_A.jpg`. Lookups also find the older
+  `<slide>_<id>_<date>_Feather_<n>.jpg` names of earlier runs.
   The model is served by `pixi run vlm-server`; point `FEATHER_VLM_ENDPOINTS` at it.
 - **Label table in cluster runs**: every `process_image` task (Celery) and every sharded run
   reads the label first, from the original slide, and keeps going with segmentation whatever

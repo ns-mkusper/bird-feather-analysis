@@ -4,6 +4,7 @@ import sqlite3
 from pathlib import Path
 
 from src.feather_processing import FeatherProcessor
+from src.output_names import find_overlay
 
 
 def _to_int_bool(value) -> int | None:
@@ -67,8 +68,8 @@ def main() -> None:
     failed = 0
     for idx, row in enumerate(rows, start=1):
         stem = Path(row["image_path"]).stem
-        overlay = processed_dir / f"{stem}_BoundingBoxes.jpg"
-        if not overlay.exists():
+        overlay = find_overlay(processed_dir, Path(row["image_path"]).name)  # new or old names
+        if overlay is None:
             skipped_missing_overlay += 1
             continue
         try:

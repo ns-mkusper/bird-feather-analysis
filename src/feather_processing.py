@@ -468,9 +468,13 @@ class FeatherProcessor:
 
             os.makedirs(output_dir, exist_ok=True)
             feathers.sort(key=lambda item: item["x"])
-            source_stem = os.path.splitext(os.path.basename(image_path))[0]
+            from src import output_names as on
+
+            names = on.output_names(image_path)  # 'CE01168 2008', 'CE01168_2008' (see output_names.py)
+            source_name = os.path.basename(image_path)
             for old in os.listdir(output_dir):
-                if old.startswith(f"{source_stem}_") and "_Feather_" in old and old.endswith(".jpg"):
+                # crops from an earlier attempt at this slide (new or old names)
+                if "_Feather_" in old and old.endswith(".jpg") and on.belongs_to(old, source_name):
                     try:
                         os.remove(os.path.join(output_dir, old))
                     except OSError:
@@ -487,7 +491,7 @@ class FeatherProcessor:
                 x1, y1, x2, y2 = [int(v) for v in b]
                 cv2.rectangle(overlay, (x1, y1), (x2, y2), (0, 0, 255), 2)  # Red bounding boxes
             
-            bbox_filename = f"{source_stem}_BoundingBoxes.jpg"
+            bbox_filename = on.overlay_name(names)
             bbox_filepath = os.path.join(output_dir, bbox_filename)
             cv2.imwrite(bbox_filepath, overlay)
 
@@ -512,7 +516,7 @@ class FeatherProcessor:
                 img_yuv[:, :, 0] = cv2.equalizeHist(img_yuv[:, :, 0])
                 crop_eq = cv2.cvtColor(img_yuv, cv2.COLOR_YUV2BGR)
 
-                filename = f"{source_stem}_{bird_id}_{date}_Feather_{idx}.jpg"
+                filename = on.crop_name(names, idx - 1)
                 cv2.imwrite(os.path.join(output_dir, filename), crop_eq)
                 saved_names.append(filename)
             feather_ids = []

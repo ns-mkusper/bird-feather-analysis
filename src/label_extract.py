@@ -244,11 +244,6 @@ def split_date(value: str | None) -> dict[str, str | None]:
     return out
 
 
-def seq_letter(index: int) -> str:
-    """0 -> 'A' (leftmost feather), 1 -> 'B', ..."""
-    return SEQ_LETTERS[index] if index < len(SEQ_LETTERS) else f"Z{index - len(SEQ_LETTERS) + 1}"
-
-
 def feather_id(bird_id: str, year: str, index: int) -> str:
     """'A0012H', '1996', 0 -> 'A0012H_1996_A'."""
     return f"{bird_id}_{year}_{seq_letter(index)}"
@@ -263,20 +258,12 @@ def assign_feather_ids(result: "LabelResult", crops: list[str]) -> list[dict]:
     return result.feathers
 
 
-_CROP_RX = re.compile(r"^(?P<stem>.+?)_[^_]+_[^_]+_Feather_(?P<idx>\d+)\.jpg$")
-
-
 def attach_feathers_from_crops(results: list["LabelResult"], crops_dir: str | Path) -> int:
-    """Feather IDs from a segmentation output folder (crop files named
-    '<slide stem>_<id>_<date>_Feather_<n>.jpg', n = 1.. left to right)."""
-    by_stem: dict[str, list[tuple[int, str]]] = defaultdict(list)
-    for p in Path(crops_dir).glob("*_Feather_*.jpg"):
-        m = _CROP_RX.match(p.name)
-        if m:
-            by_stem[m.group("stem")].append((int(m.group("idx")), str(p)))
+    """Feather IDs from a segmentation output folder (crops found under the
+    current or the older file names, left to right)."""
     n = 0
     for r in results:
-        crops = [c for _, c in sorted(by_stem.get(Path(r.image).stem, []))]
+        crops = [str(p) for p in find_crops(crops_dir, r.file_id)]
         if crops:
             assign_feather_ids(r, crops)
             n += 1
@@ -289,24 +276,8 @@ def load_config(path: str | Path | None = None) -> dict:
 
 # ---------------------------------------------------------------- file name
 
-_FILENAME_STRICT = re.compile(r"^([A-Z]{1,2})\s*(\d{3,5})\s+((?:19|20)\d{2})")
-_FILENAME_LENIENT = re.compile(r"^([A-Z]{1,2})(\d{3,6})((?:19|20)\d{2})$")
-
-
-def parse_filename(name: str) -> dict:
-    """'A0012 1996-im1058.jpg' -> {'id': 'A0012', 'year': '1996', 'parse': 'standard'}.
-    Also handles the odd names in the collection ('-BD31906 1999-…',
-    'AX868161996-img…', 'BX40 368 2004-…'); those come back as parse='lenient'
-    and are only used for cross-checks, never as a fallback value."""
-    stem = Path(name).stem
-    m = _FILENAME_STRICT.match(stem)
-    if m:
-        return {"id": m.group(1) + m.group(2), "year": m.group(3), "parse": "standard"}
-    head = re.split(r"-im", stem.lstrip("-"), maxsplit=1)[0]
-    m = _FILENAME_LENIENT.match(re.sub(r"\s+", "", head))
-    if m:
-        return {"id": m.group(1) + m.group(2), "year": m.group(3), "parse": "lenient"}
-    return {"id": None, "year": None, "parse": "unparsed"}
+# File-name parsing lives with the output naming rules (no heavy imports).
+from src.output_names import find_crops, parse_filename, seq_letter  # noqa: E402
 
 
 # ---------------------------------------------------------------- crops

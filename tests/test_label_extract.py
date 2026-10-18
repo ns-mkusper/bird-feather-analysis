@@ -267,14 +267,18 @@ def test_feather_ids_from_label_and_filename_backup():
 
 
 def test_attach_feathers_from_segmentation_folder(tmp_path):
+    new, old = tmp_path / "new", tmp_path / "old"
+    new.mkdir(); old.mkdir()
+    for letter in ("B", "A", "C"):
+        (new / f"A0012_1996_Feather_{letter}.jpg").write_bytes(b"x")
     for n in (2, 1, 3):
-        (tmp_path / f"A0012 1996-im1058_A0012_1996_Feather_{n}.jpg").write_bytes(b"x")
-    (tmp_path / "A0012 1996-im1058_BoundingBoxes.jpg").write_bytes(b"x")
-    r = lx.LabelResult("A0012 1996-im1058.jpg", filename=lx.parse_filename("A0012 1996-im1058.jpg"))
-    r.fields["bird_id"] = lx.FieldResult("A0012H", "readable")
-    r.fields["date"] = lx.FieldResult("1996-06-04", "readable")
-    assert lx.attach_feathers_from_crops([r], tmp_path) == 1
-    assert [(f["seq"], f["crop"].split("_")[-1]) for f in r.feathers] == [("A", "1.jpg"), ("B", "2.jpg"), ("C", "3.jpg")]
+        (old / f"A0012 1996-im1058_A0012_1996_Feather_{n}.jpg").write_bytes(b"x")
+    for folder, first in ((new, "A0012_1996_Feather_A.jpg"), (old, "A0012 1996-im1058_A0012_1996_Feather_1.jpg")):
+        r = lx.LabelResult("A0012 1996-im1058.jpg", filename=lx.parse_filename("A0012 1996-im1058.jpg"))
+        r.fields["bird_id"] = lx.FieldResult("A0012H", "readable")
+        r.fields["date"] = lx.FieldResult("1996-06-04", "readable")
+        assert lx.attach_feathers_from_crops([r], folder) == 1
+        assert [f["seq"] for f in r.feathers] == ["A", "B", "C"] and r.feathers[0]["crop"] == first
 
 
 @pytest.mark.parametrize("raw", [

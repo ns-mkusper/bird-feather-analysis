@@ -101,3 +101,49 @@ def test_distributed_driver_writes_label_table(tmp_path):
     rows = (tmp_path / "labels" / "labels.csv").read_text().splitlines()
     assert len(rows) == 2 and "A0012H" in rows[1]
     assert (tmp_path / "labels" / "labels.sqlite3").exists()
+
+
+def test_process_image_writes_new_names_left_to_right(tmp_path):
+    """Real FeatherProcessor.process_image with fake masks instead of SAM."""
+    import numpy as np
+    from src.feather_processing import FeatherProcessor
+
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    slide = raw / "CE01168 2008-im2346.jpg"
+    Image.new("RGB", (300, 200), "white").save(slide)
+    (raw / "A0012 1996-im1058.jpg").write_bytes(b"x")
+    out = tmp_path / "out"
+    out.mkdir()
+    # leftovers from an earlier attempt (old and new names) must be replaced
+    (out / "CE01168 2008-im2346_CE01168_2008_Feather_7.jpg").write_bytes(b"x")
+    (out / "CE01168_2008_Feather_E.jpg").write_bytes(b"x")
+
+    def masks_at(xs):
+        ms = []
+        for x in xs:
+            m = np.zeros((200, 300), dtype=np.float32)
+            m[20:180, x:x + 30] = 1
+            ms.append(m)
+        return ms
+
+    p = object.__new__(FeatherProcessor)
+    p.segmenter, p.has_vlm, p.vlm_scoring_enabled, p.vlm_metadata_enabled = "sam3", False, False, False
+    p._segment_sam3 = lambda *a, **k: ([[200, 20, 230, 180], [20, 20, 50, 180], [110, 20, 140, 180]],
+                                       masks_at([200, 20, 110]), "")
+    labels = lx.LabelResult(str(slide), filename=lx.parse_filename(slide.name))
+    labels.fields["bird_id"] = lx.FieldResult("CE01168V", "readable")
+    labels.fields["date"] = lx.FieldResult("2008-05-22", "readable")
+    res = p.process_image(str(slide), str(out), labels=labels)
+
+    assert res.success and res.feathers_saved == 3
+    names = sorted(f.name for f in out.iterdir())
+    assert names == ["CE01168 2008_BoundingBoxes.jpg", "CE01168_2008_Feather_A.jpg",
+                     "CE01168_2008_Feather_B.jpg", "CE01168_2008_Feather_C.jpg"]
+    assert [(f["feather_id"], f["crop"]) for f in res.feather_ids] == [
+        ("CE01168V_2008_A", "CE01168_2008_Feather_A.jpg"), ("CE01168V_2008_B", "CE01168_2008_Feather_B.jpg"),
+        ("CE01168V_2008_C", "CE01168_2008_Feather_C.jpg")]
+    # leftmost mask (x=20) became crop A
+    import cv2
+    a = cv2.imread(str(out / "CE01168_2008_Feather_A.jpg"))
+    assert a is not None and a.shape[1] <= 31

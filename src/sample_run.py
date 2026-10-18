@@ -64,7 +64,9 @@ def run(n: int = 5, seed: int = 0, match: list[str] | None = None, timeout: int 
         print(f"  TIMEOUT {Path(p).name} (still queued or running)")
 
     # Each worker writes to its own disk; collect from all of them.
-    stems = {Path(p).stem for p in chosen}
+    from src.output_names import belongs_to
+
+    slide_names = [Path(p).name for p in chosen]
     got = 0
     for host in config.cluster_hosts:
         cmd = f"find {io._remote_shell_path(remote_out)} -maxdepth 1 -type f -iname '*.jpg' | sort"
@@ -72,7 +74,7 @@ def run(n: int = 5, seed: int = 0, match: list[str] | None = None, timeout: int 
         proc = subprocess.run([*io._ssh_base_cmd(host), cmd], capture_output=True, text=True)
         listing = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
         for f in listing:
-            if any(Path(f).name.startswith(s) for s in stems):
+            if any(belongs_to(Path(f).name, n) for n in slide_names):
                 io.fetch_remote_file(host, f, local_out)
                 got += 1
     print(f"copied {got} output files to {local_out}")
