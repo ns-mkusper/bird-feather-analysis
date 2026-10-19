@@ -11,8 +11,6 @@ set -euo pipefail
 OUTPUT_SUBDIR="${OUTPUT_SUBDIR:-}"
 MAX_IMAGES="${MAX_IMAGES:-}"
 ENABLE_VLM="${FEATHER_ENABLE_VLM:-1}"
-ENABLE_VLM_SCORING="${FEATHER_ENABLE_VLM_SCORING:-1}"
-ENABLE_VLM_METADATA="${FEATHER_ENABLE_VLM_METADATA:-1}"
 VLM_MODEL="${FEATHER_VLM_MODEL:-mlx-community/Qwen3.8-27B-4bit}"
 
 SHARD_COUNT="${#NODES[@]}"
@@ -29,7 +27,7 @@ echo "Starting sharded run across ${SHARD_COUNT} nodes..."
 echo "Run ID: ${RUN_ID}"
 echo "Output: ${OUTPUT_SUBDIR}"
 echo "Git: commit=${GIT_COMMIT} branch=${GIT_BRANCH} dirty=${GIT_DIRTY}"
-echo "VLM model: ${VLM_MODEL} (enable=${ENABLE_VLM}, scoring=${ENABLE_VLM_SCORING}, metadata=${ENABLE_VLM_METADATA})"
+echo "VLM model: ${VLM_MODEL} (enable=${ENABLE_VLM})"
 
 for i in "${!NODES[@]}"; do
   node="${NODES[$i]}"
@@ -37,8 +35,6 @@ for i in "${!NODES[@]}"; do
   node_ssh "$node" "
     cd $REPO_DIR
     export FEATHER_ENABLE_VLM='$ENABLE_VLM'
-    export FEATHER_ENABLE_VLM_SCORING='$ENABLE_VLM_SCORING'
-    export FEATHER_ENABLE_VLM_METADATA='$ENABLE_VLM_METADATA'
     export FEATHER_VLM_MODEL='$VLM_MODEL'
     export PYTHONUNBUFFERED=1
     export FEATHER_RUN_ID='${RUN_ID}'

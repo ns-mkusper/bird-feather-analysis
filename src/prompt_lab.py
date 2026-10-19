@@ -30,7 +30,9 @@ def current_prompts() -> dict:
     cfg = load_seg_config()
     return {"sam3_prompts": cfg["sam3"]["prompts"], "sam3_retry_prompts": cfg["sam3"].get("retry_prompts", []),
             "sam3_conf": cfg["sam3"]["conf"], "postprocess": cfg["postprocess"],
-            "feather_judge_prompt": cfg["feather_judge"]["prompt"], "slide_judge_prompt": cfg["slide_judge"]["prompt"]}
+            "feather_judge_prompt": cfg["feather_judge"]["prompt"],
+            "feather_score": cfg["feather_judge"].get("score", feather_judge.DEFAULT_SCORE),
+            "inventory_prompt": cfg["inventory"]["prompt"]}
 
 
 def list_feathers(seg_dir: str | Path, slides: list[str] | None = None, limit: int | None = None) -> list[dict]:
@@ -98,23 +100,59 @@ def cached_judge(prompt: str, feathers: list[dict], judge_overrides: dict | None
     return out
 
 
-def compare(a: pd.DataFrame, b: pd.DataFrame, verdicts: str | Path | None = None,
-            good_from: float = 7) -> tuple[pd.DataFrame, pd.DataFrame | None]:
+# Per-check calibration: one column per check in the verdicts CSV; "cut"/"complete"
+# for the sides, true/false for the rest, blank = not checked.
+CHECKS = ["outline_left", "outline_right", "outline_top", "outline_bottom", "holes_or_gaps", "fragment",
+          "single_feather", "other_feather_inside", "other_material_inside"]
+# The answer that means "this check found a problem"
+_FLAG = {**{c: "cut" for c in CHECKS[:4]}, "holes_or_gaps": True, "fragment": True, "single_feather": False,
+         "other_feather_inside": True, "other_material_inside": True}
+
+
+def _norm(check: str, v):
+    """CSV/JSON value -> 'cut'|'complete' or True|False; None when blank."""
+    if v is None or (isinstance(v, float) and pd.isna(v)) or str(v).strip() == "":
+        return None
+    if check.startswith("outline_"):
+        t = str(v).strip().lower()
+        return t if t in ("cut", "complete") else None
+    t = str(v).strip().lower()
+    return True if t in ("true", "1", "yes", "y") else False if t in ("false", "0", "no", "n") else None
+
+
+def _model_flags(row) -> dict:
+    """Model answer per check; holes_or_gaps includes the measured holes/split mask."""
+    return {c: _norm(c, row.get(c)) for c in CHECKS}
+
+
+def _good(df: pd.DataFrame) -> pd.Series:
+    """good = the feather passed every check (the pipeline's decision), bad = any check failed."""
+    return pd.Series([("good" if feather_judge.needs_review({"judge_" + k: v for k, v in r.items()}) == ""
+                       else "bad") if r.get("status") == "ok" else None
+                      for r in df.to_dict("records")], index=df.index)
+
+
+def compare(a: pd.DataFrame, b: pd.DataFrame, verdicts: str | Path | None = None
+            ) -> tuple[pd.DataFrame, pd.DataFrame | None]:
     """Side-by-side A/B table; with your verdicts CSV (crop, verdict = good|bad),
-    also how often each prompt agrees with you (score >= good_from = good)."""
-    cols = ["score", "complete", "fragment", "single_feather", "missing_part", "notes", "status"]
-    m = a[["file_id", "seq", "crop"] + [c for c in cols if c in a]].merge(
-        b[["crop"] + [c for c in cols if c in b]], on="crop", suffixes=("_A", "_B"))
+    also how often each prompt's pass/fail (all checks passed = good) agrees
+    with you. The derived score is shown for sorting only."""
+    cols = ["score", "sides_cut", "holes_or_gaps", "holes", "mask_parts", "fragment", "single_feather",
+            "other_feather_inside", "other_material_inside", "model_score", "notes", "status"]
+    a = a.assign(decision=_good(a))
+    b = b.assign(decision=_good(b))
+    m = a[["file_id", "seq", "crop", "decision"] + [c for c in cols if c in a]].merge(
+        b[["crop", "decision"] + [c for c in cols if c in b]], on="crop", suffixes=("_A", "_B"))
     m["delta"] = m["score_B"] - m["score_A"]
     stats = None
     if verdicts and Path(verdicts).exists():
-        v = pd.read_csv(verdicts).dropna(subset=["verdict"])
+        v = pd.read_csv(verdicts, dtype=str).fillna("")
         v = v[v.verdict.isin(["good", "bad"])]
         m = m.merge(v[["crop", "verdict"]], on="crop", how="left")
         rows = []
         for side in ("A", "B"):
-            j = m.dropna(subset=["verdict", f"score_{side}"])
-            pred = j[f"score_{side}"].ge(good_from).map({True: "good", False: "bad"})
+            j = m.dropna(subset=["verdict", f"decision_{side}"])
+            pred = j[f"decision_{side}"]
             rows.append({"prompt": side, "feathers with your verdict": len(j),
                          "agree": int((pred == j.verdict).sum()),
                          "bad called good": int(((pred == "good") & (j.verdict == "bad")).sum()),
@@ -123,24 +161,54 @@ def compare(a: pd.DataFrame, b: pd.DataFrame, verdicts: str | Path | None = None
     return m, stats
 
 
+def check_agreement(results: pd.DataFrame, verdicts: str | Path) -> pd.DataFrame:
+    """Per check: how often the model's answer matches your hand check, over the
+    feathers where you filled that column. 'missed problem' = you flagged it and
+    the model passed it (the costly kind); 'false alarm' = the reverse."""
+    if not Path(verdicts).exists():
+        return pd.DataFrame()
+    v = pd.read_csv(verdicts, dtype=str).fillna("")
+    v = {r["crop"]: r for r in v.to_dict("records")}
+    rows = []
+    for check in CHECKS:
+        n = agree = missed = false_alarm = 0
+        for r in results.to_dict("records"):
+            if r.get("status") != "ok" or r.get("crop") not in v:
+                continue
+            want = _norm(check, v[r["crop"]].get(check))
+            got = _model_flags(r)[check]
+            if want is None or got is None:
+                continue
+            n += 1
+            agree += want == got
+            missed += (want == _FLAG[check]) and (got != _FLAG[check])
+            false_alarm += (got == _FLAG[check]) and (want != _FLAG[check])
+        rows.append({"check": check, "feathers you checked": n, "agree": agree,
+                     "agreement": round(agree / n, 3) if n else None,
+                     "missed problem": missed, "false alarm": false_alarm})
+    return pd.DataFrame(rows)
+
+
 def write_verdict_template(feathers: list[dict], path: str | Path) -> Path:
-    """A CSV to fill in by hand: verdict = good | bad for each crop (keeps existing calls)."""
+    """A CSV to fill in by hand: verdict = good | bad for each crop and, for the
+    per-check calibration, each check (outline_* = cut|complete, the rest
+    true|false; blank = not checked). Existing entries are kept."""
     path = Path(path)
     old = {}
     if path.exists():
         old = {r["crop"]: r for r in csv.DictReader(open(path, newline=""))}
     with open(path, "w", newline="") as fh:
-        w = csv.DictWriter(fh, fieldnames=["file_id", "seq", "crop", "verdict", "why"])
+        w = csv.DictWriter(fh, fieldnames=["file_id", "seq", "crop", "verdict", *CHECKS, "why"])
         w.writeheader()
         for f in feathers:
             o = old.get(f["crop"], {})
             w.writerow({"file_id": f["file_id"], "seq": f["seq"], "crop": f["crop"],
-                        "verdict": o.get("verdict", ""), "why": o.get("why", "")})
+                        **{k: o.get(k, "") for k in ("verdict", *CHECKS, "why")}})
     return path
 
 
 def save_prompt(kind: str, prompt: str) -> None:
-    """Writes a prompt into configs/segmentation.json (kind: feather_judge | slide_judge)."""
+    """Writes a prompt into configs/segmentation.json (kind: feather_judge | inventory)."""
     cfg = json.loads(Path(SEG_CONFIG).read_text())
     cfg[kind]["prompt"] = prompt
     Path(SEG_CONFIG).write_text(json.dumps(cfg, indent=2) + "\n")
@@ -190,3 +258,45 @@ def seg_summary(seg_dir: str | Path, gold: str | Path | None = REPO / "data" / "
     if len(df) and df.hand_count.notna().any():
         df["count_ok"] = df.feathers == pd.to_numeric(df.hand_count, errors="coerce")
     return df
+
+
+def run_inventory(prompt: str, seg_dir: str | Path, slides: list[str], hide: int | None = 1,
+                  slides_dir: str | Path = REPO / "data" / "raw_cache", log=print) -> pd.DataFrame:
+    """Tests the missed-feather prompt: rebuilds each slide's masks from its crops
+    and hides one (`hide` = 0-based position left to right; None = hide nothing),
+    so the right answer is known. Cached per (prompt, slide, hide)."""
+    from src import feather_inventory
+
+    icfg = {**load_seg_config()["inventory"], "prompt": prompt}
+    client = lx.VLMClient(lx.load_config()["vlm"])
+    CACHE.mkdir(parents=True, exist_ok=True)
+    (CACHE / "inventory").mkdir(exist_ok=True)
+    rows = []
+    for s in slides:
+        key = _key(prompt, s, f"inventory hide={hide}")
+        cached = CACHE / f"inv_{key}.json"
+        if cached.exists():
+            rows.append(json.loads(cached.read_text()))
+            continue
+        slide = cv2.imread(str(Path(slides_dir) / s))
+        crops = find_crops(seg_dir, s)
+        if slide is None or not crops:
+            continue
+        masks = [crop_mask(slide, cv2.imread(str(c)))[0] for c in crops]
+        masks.sort(key=lambda m: m.nonzero()[1].mean())
+        expected = None
+        if hide is not None and len(masks) > hide:
+            masks = masks[:hide] + masks[hide + 1:]
+            expected = seq_letter(hide)
+        items, summary, overlay = feather_inventory.check(client, slide, masks, icfg)
+        img_path = CACHE / "inventory" / f"{Path(s).stem}_{key}.jpg"
+        overlay.save(img_path, quality=85)
+        found = [seq_letter(i) for i, it in enumerate(items) if it["kind"] == "missed"]
+        row = {"file_id": s, "segmented_shown": len(masks), "hidden": expected or "", "found_missed": ",".join(found),
+               "correct": (found == [expected]) if expected else (found == []),
+               **{k: summary[k] for k in ("inventory_status", "inventory_total", "inventory_note")},
+               "overlay": str(img_path)}
+        cached.write_text(json.dumps(row))
+        log(f"  {s}: hidden {expected} found {found} ({summary['inventory_status']})")
+        rows.append(row)
+    return pd.DataFrame(rows)

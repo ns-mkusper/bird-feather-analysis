@@ -174,8 +174,10 @@ class LabelResult:
         for k, (v, st) in self.date_parts().items():
             out[k] = export_value(v, st)
             out[f"{k}_status"] = st
-        out["feather_count"] = len(self.feathers) if self.feathers else None
-        out["feather_ids"] = ";".join(f.get("feather_id") or "" for f in self.feathers)
+        seg = segmented(self.feathers)
+        out["feather_count"] = len(seg) if self.feathers else None
+        out["feather_ids"] = ";".join(f["feather_id"] for f in seg if f.get("feather_id"))
+        out["possible_missed"] = sum(f.get("segment_status") == "possible_missed" for f in self.feathers)
         return out
 
     def id_parts(self) -> dict:
@@ -244,6 +246,11 @@ def split_date(value: str | None) -> dict[str, str | None]:
     return out
 
 
+def segmented(feathers: list[dict] | None) -> list[dict]:
+    """Feather records with a crop (not the inventory's review-only rows)."""
+    return [f for f in feathers or [] if f.get("segment_status", "segmented") == "segmented"]
+
+
 def feather_id(bird_id: str, period: str, index: int) -> str:
     """'A0012H', '1996', 0 -> 'A0012H_1996_A'; period is the full YYYYMMDD
     when the bird has several slides that year ('BB17692H_19980612_A')."""
@@ -291,15 +298,18 @@ def slide_date(image_path: str | Path, output_dir: str | Path, client, cfg: dict
     return result_date(r)
 
 
-def assign_feather_ids(result: "LabelResult", crops: list[str], period: str | None = None) -> list[dict]:
+def assign_feather_ids(result: "LabelResult", crops: list[str], period: str | None = None,
+                       seqs: list[str] | None = None) -> list[dict]:
     """Feather IDs for a slide's segmented feathers. `crops` must already be in
     left-to-right order (the segmenter sorts by x). The period comes from the
     crop names when they carry one (year / YYYYMMDD), else the label year.
     Stored on the result."""
     parts = result.id_parts()
-    period = period or (period_of_crop(crops[0]) if crops else None) or parts["year"]
-    result.feathers = [{"seq": seq_letter(i), "feather_id": feather_id(parts["bird_id"], period, i),
-                        "period": period, "crop": Path(c).name, **parts} for i, c in enumerate(crops)]
+    first = next((c for c in crops if c), None)
+    period = period or (period_of_crop(first) if first else None) or parts["year"]
+    seqs = seqs or [seq_letter(i) for i in range(len(crops))]
+    result.feathers = [{"seq": q, "feather_id": f"{parts['bird_id']}_{period}_{q}", "period": period,
+                        "crop": Path(c).name if c else "", **parts} for q, c in zip(seqs, crops)]
     return result.feathers
 
 
@@ -311,6 +321,9 @@ def attach_feathers_from_crops(results: list["LabelResult"], crops_dir: str | Pa
     n = 0
     dates = {r.file_id: result_date(r) for r in results}
     for r in results:
+        if r.feathers and any("segment_status" in f for f in r.feathers):
+            n += 1      # records written by the pipeline itself (scores, missed feathers): keep them
+            continue
         rec = Path(crops_dir) / "labels" / f"{Path(r.image).stem}.json"
         if rec.exists():
             # written by the pipeline itself: full feather records (scores, measurements)
@@ -767,13 +780,20 @@ CREATE TABLE IF NOT EXISTS specimen_labels (
 # The per-feather output table: one row per kept feather crop, with the
 # slide's label fields, the segmentation measurements and the VLM judge.
 FEATHER_TABLE_COLS = [
-    "run_id", "node_id", "file_id", "feather_id", "seq", "duplicate_of", "needs_review", "label_needs_review",
+    "run_id", "node_id", "file_id", "feather_id", "seq", "segment_status", "duplicate_of", "needs_review",
+    "label_needs_review",
     "bird_id", "bird_id_status", "bird_id_source", "species", "species_status", "age", "age_status",
     "sex", "sex_status", "year", "month", "day", "date_status", "year_source", "period",
     "crop", "qc_image", "bbox", "area_px", "length_px", "width_px", "angle_deg", "touches_border",
     "sam_score", "sam_masks", "postprocess",
-    "judge_status", "judge_score", "judge_complete", "judge_single_feather", "judge_fragment",
-    "judge_missing_part", "judge_background_included", "judge_other_feather_included", "judge_notes", "judge_error",
+    # per-feather checks (src/feather_judge.py): score is derived from the checks
+    "judge_status", "judge_score", "judge_segment_ok", "judge_sides_cut", "judge_outline_left",
+    "judge_outline_right", "judge_outline_top", "judge_outline_bottom", "judge_holes_or_gaps", "judge_holes",
+    "judge_hole_frac", "judge_mask_parts", "judge_single_feather", "judge_fragment", "judge_other_feather_inside",
+    "judge_other_material_inside", "judge_model_score", "judge_notes", "judge_error",
+    # missed feathers (src/feather_inventory.py): slide-level result repeated per row
+    "missed_x", "missed_between", "missed_partly_hidden", "inventory_status", "inventory_total",
+    "feathers_segmented", "feathers_possibly_missed", "inventory_note", "inventory_image",
 ]
 FEATHER_SQL = ("CREATE TABLE IF NOT EXISTS specimen_feathers (\n    "
                + ",\n    ".join(f"{c} TEXT" + (" NOT NULL" if c in ("run_id", "node_id", "file_id", "seq") else "")
@@ -846,8 +866,8 @@ def upsert_labels(conn: sqlite3.Connection, results: list[LabelResult], run_id: 
             row[f"{name}_source"] = f.source
         for k, (v, st) in r.date_parts().items():
             row[k] = export_value(v, st)
-        row["feather_count"] = len(r.feathers) if r.feathers else None
-        row["feather_ids"] = ";".join(f.get("feather_id") or "" for f in r.feathers)
+        row["feather_count"] = len(segmented(r.feathers)) if r.feathers else None
+        row["feather_ids"] = ";".join(f["feather_id"] for f in segmented(r.feathers) if f.get("feather_id"))
         cols = list(row)
         conn.execute(f"INSERT OR REPLACE INTO specimen_labels ({','.join(cols)}) "
                      f"VALUES ({','.join('?' * len(cols))})", [row[c] for c in cols])
@@ -1176,18 +1196,26 @@ def slide_problems(r: LabelResult, gold_row: dict | None, cfg: dict) -> list[dic
         elif f.status in ("needs_review", "conflict", "filename_fallback", "partial"):
             out.append({"field": name, "kind": f.status, "got": f.value, "want": want or None, "status": f.status,
                         "note": f.note})
+    for f in r.feathers or []:
+        if f.get("segment_status") in ("possible_missed", "count_unclear"):
+            # the inventory's flags: counting overlapping feathers is unreliable, so review only
+            out.append({"field": "feathers", "kind": "possible_missed", "got": None, "want": None,
+                        "status": f["segment_status"], "note": f.get("needs_review")})
+        elif f.get("needs_review"):
+            out.append({"field": f"feather {f.get('seq')}", "kind": "feather_check", "got": None, "want": None,
+                        "status": f.get("judge_status"), "note": f.get("needs_review")})
     want_n = (gold_row or {}).get("feather_count", "").strip()
-    if want_n and r.feathers is not None and str(len(r.feathers)) != want_n:
-        out.append({"field": "feathers", "kind": "count", "got": len(r.feathers), "want": int(want_n),
+    if want_n and r.feathers and str(len(segmented(r.feathers))) != want_n:
+        out.append({"field": "feathers", "kind": "count", "got": len(segmented(r.feathers)), "want": int(want_n),
                     "status": "segmentation"})
     rank = {"wrong": 0, "missed": 1, "model_error": 2, "count": 3, "flagged_wrong": 4, "conflict": 5,
-            "needs_review": 6, "filename_fallback": 7, "partial": 8}
+            "needs_review": 6, "possible_missed": 7, "feather_check": 8, "filename_fallback": 9, "partial": 10}
     return sorted(out, key=lambda p: rank.get(p["kind"], 9))
 
 
 def score_feather_counts(results: list[LabelResult], gold_csv: str | Path) -> dict | None:
     gold = load_gold(gold_csv)
-    rows = [(r.file_id, len(r.feathers), int(gold[r.file_id]["feather_count"])) for r in results
+    rows = [(r.file_id, len(segmented(r.feathers)), int(gold[r.file_id]["feather_count"])) for r in results
             if r.feathers and (gold.get(r.file_id) or {}).get("feather_count", "").strip()]
     if not rows:
         return None
@@ -1219,7 +1247,9 @@ def finish_run(out: Path, chosen: list[str], cfg: dict, gold: str | Path | None 
     write_sqlite(results, out / "labels.sqlite3", out.name, cfg["vlm"]["model"])
     summary = summarize(results)
     summary["slides_with_feather_ids"] = sum(bool(r.feathers) for r in results)
-    summary["feathers"] = sum(len(r.feathers) for r in results)
+    summary["feathers"] = sum(len(segmented(r.feathers)) for r in results)
+    summary["possible_missed_feathers"] = sum(f.get("segment_status") == "possible_missed"
+                                              for r in results for f in r.feathers)
     summary["duplicate_feathers"] = sum(bool(f.get("duplicate_of")) for r in results for f in r.feathers)
     scored = [f["judge_score"] for r in results for f in r.feathers if isinstance(f.get("judge_score"), float)]
     summary["feathers_scored"] = len(scored)

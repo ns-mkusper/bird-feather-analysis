@@ -9,7 +9,7 @@ flowchart TB
     B --> C[Find and Segment Feathers<br/>SAM 3 text prompts]
     C --> E[Extract and Normalize Feather Crops]
     C --> F[Render QA Overlays<br/>boxes + masks]
-    F --> G[Run Vision-Language QA<br/>Qwen3.8: score + flags + notes]
+    F --> G[Check every feather<br/>Qwen3.8: outline, holes, one feather,<br/>nothing else inside; missed-feather count]
     G --> H[Collect Metrics in SQLite DB]
     H --> I[Live Monitoring and Review]
 ```
@@ -18,7 +18,7 @@ flowchart TB
 2. Find and segment every feather with `SAM 3` concept segmentation from a text prompt ("bird feather").
    `FEATHER_SEGMENTER=dino_sam2` switches to the original Grounding DINO boxes + SAM 2.1 masks.
 3. Post-process masks into clean feather crops, apply basic normalization, and persist run outputs.
-4. Generate visual QA overlays and run vision-language assessment (`Qwen3.8-27B` on MLX) to score quality and detect failure modes such as grouped boxes, leakage, or incomplete coverage.
+4. Generate QA overlays and check each feather with the vision-language model (`Qwen3.8-27B` on MLX): outline complete on every side, no holes or gaps (also measured on the mask), exactly one feather and not a fragment, no other feather or material inside. A slide-level inventory flags feathers the segmentation may have missed, for review only. A 1-10 score is computed from the checks with fixed deductions (`configs/segmentation.json`) for sorting; retries and review use the checks. The old slide-level judge (metadata plus one overlay score) is retired.
 5. Parse specimen metadata from structured sources first, with VLM fallback when metadata is missing.
 6. Persist per-image outcomes (timings, counts, QA flags, notes, retry decisions) into SQLite for queryable run history.
 7. Drive dashboards and review notebooks from database state so monitoring is tied to recorded pipeline results, not transient filesystem scans.

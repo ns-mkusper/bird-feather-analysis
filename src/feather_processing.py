@@ -56,8 +56,12 @@ class ProcessResult:
     # One record per saved crop, left to right: seq (A, B, ...), crop file,
     # feather_id (<bird_id>_<period>_<seq>, when labels were read) with where
     # bird_id/period came from, mask measurements, clean-up notes and the
-    # per-feather VLM judge result (judge_*).
+    # per-feather VLM judge result (judge_*). Possibly missed feathers follow as
+    # review rows (segment_status 'possible_missed', no letter, crop or ID).
     feather_ids: list = field(default_factory=list)
+    # Slide-level view of the per-feather checks (feather_judge.slide_checks);
+    # the retry decision uses these, not a score.
+    qa_checks: dict = field(default_factory=dict)
 
 
 class FeatherProcessor:
@@ -101,8 +105,6 @@ class FeatherProcessor:
         self.vlm_model = None
         self.vlm_processor = None
         self.vlm_generate = None
-        self.vlm_scoring_enabled = os.getenv("FEATHER_ENABLE_VLM_SCORING", "1") == "1"
-        self.vlm_metadata_enabled = os.getenv("FEATHER_ENABLE_VLM_METADATA", "1") == "1"
         self.vlm_model_id = os.getenv("FEATHER_VLM_MODEL", DEFAULT_VLM_MODEL)
         self.vlm_config = None
         # Specimen label table (src/label_extract.py): read from the original
@@ -125,80 +127,6 @@ class FeatherProcessor:
                 self.has_vlm = True
             except Exception as exc:  # noqa: BLE001
                 logging.warning("MLX VLM unavailable; continuing without QA model: %s", exc)
-
-    def _normalize_vlm_metadata(self, raw_bird: str, raw_date: str) -> tuple[str, str]:
-        bird = "UNKNOWN"
-        bird_m = re.search(r"([A-Z]{1,3})\s*[-_ ]?\s*(\d{4,8})", raw_bird, flags=re.IGNORECASE)
-        if bird_m:
-            bird = f"{bird_m.group(1).upper()}{bird_m.group(2)}"
-
-        date = "UNKNOWN"
-        date_full = re.search(r"(19|20)\d{2}[-_/](0[1-9]|1[0-2])[-_/](0[1-9]|[12]\d|3[01])", raw_date)
-        if date_full:
-            date = date_full.group(0).replace("_", "-").replace("/", "-")
-        else:
-            date_compact = re.search(r"((19|20)\d{2})(0[1-9]|1[0-2])([0-2]\d|3[01])", raw_date)
-            if date_compact:
-                date = f"{date_compact.group(1)}-{date_compact.group(3)}-{date_compact.group(4)}"
-            else:
-                year_only = re.search(r"(19|20)\d{2}", raw_date)
-                if year_only:
-                    date = year_only.group(0)
-        return bird, date
-
-    def _vlm_judge(self, image_path: str) -> dict:
-        out = {
-            "Bird_ID": "UNKNOWN",
-            "Date": "UNKNOWN",
-            "quality_score_1_to_10": None,
-            "all_feathers_covered": None,
-            "background_leakage_detected": None,
-            "green_boxes_grouped_feathers": None,
-            "notes": "",
-        }
-        if not (self.has_vlm and self.vlm_generate is not None and (self.vlm_scoring_enabled or self.vlm_metadata_enabled)):
-            return out
-        try:
-            instruction = load_seg_config()["slide_judge"]["prompt"]   # editable in configs/segmentation.json
-        except (KeyError, OSError, ValueError):
-            instruction = "Rate this feather segmentation overlay 1-10 as JSON {\"quality_score_1_to_10\": n}."
-        # The model's own chat template (Qwen3.8 differs from the hand-written Qwen3-VL
-        # tokens this used to hard-code); thinking off so the reply is just the JSON.
-        prompt = self._chat_prompt(instruction)
-        try:
-            output = self.vlm_generate(
-                self.vlm_model,
-                self.vlm_processor,
-                prompt=prompt,
-                image=[image_path],
-                max_tokens=180,
-            )
-            text = getattr(output, "text", str(output))
-            text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
-            match = re.search(r"\{.*?\}", text, re.DOTALL)
-            if match:
-                obj = json.loads(match.group(0))
-                bird, date = self._normalize_vlm_metadata(str(obj.get("Bird_ID", "")), str(obj.get("Date", "")))
-                out["Bird_ID"] = bird
-                out["Date"] = date
-                score = obj.get("quality_score_1_to_10")
-                if isinstance(score, (int, float)):
-                    out["quality_score_1_to_10"] = float(score)
-                for key in ("all_feathers_covered", "background_leakage_detected", "green_boxes_grouped_feathers"):
-                    val = obj.get(key)
-                    if isinstance(val, bool):
-                        out[key] = val
-                notes = obj.get("notes")
-                if isinstance(notes, str):
-                    out["notes"] = notes.strip()
-                return out
-            num = re.search(r"([0-9]+(?:\\.[0-9]+)?)", text)
-            if num:
-                out["quality_score_1_to_10"] = float(num.group(1))
-            return out
-        except Exception as exc:  # noqa: BLE001
-            logging.warning("VLM judge failed for %s: %s", image_path, exc)
-            return out
 
     def label_client(self):
         if self._label_client is None:
@@ -418,15 +346,6 @@ class FeatherProcessor:
         cfg = load_seg_config((options or {}).get("segmentation"))
         bird_id, date = self._infer_metadata(image_path)
         metadata_source = "filename"
-        vlm_judge = {
-            "quality_score_1_to_10": None,
-            "all_feathers_covered": None,
-            "background_leakage_detected": None,
-            "green_boxes_grouped_feathers": None,
-            "Bird_ID": "UNKNOWN",
-            "Date": "UNKNOWN",
-            "notes": "",
-        }
 
         try:
             img_pil = Image.open(image_path).convert("RGB")
@@ -485,6 +404,7 @@ class FeatherProcessor:
                 feather_crop = clean_feather[y:y_max, x : x + w]
                 stats = sp.shape_stats(piece.mask)
                 feathers.append({"x": x, "crop": feather_crop, "mask": final_mask[:, :, 0] > 0,
+                                 "full_mask": piece.mask,   # untrimmed segmentation, judged as is
                                  "record": {"bbox": [x, y, x + w, y_max], "area_px": stats["area"],
                                             "length_px": round(stats["length"]), "width_px": round(stats["width"]),
                                             "angle_deg": round(stats["angle"], 1),
@@ -531,7 +451,28 @@ class FeatherProcessor:
                         os.remove(os.path.join(output_dir, old))
                     except OSError:
                         pass
-            # Create a simple visual QA overlay for VLM judgment and notebook preview.
+            # Letters A, B, C ... and crop names come from the segmentation alone (left to right).
+            feathers_to_save = feathers[: int(cfg["crop"].get("max_feathers", 8))]
+            jcfg, icfg = cfg.get("feather_judge", {}), cfg.get("inventory", {})
+            vlm_client = self.label_client() if (jcfg.get("enabled") or icfg.get("enabled")) else None
+            qc_dir = os.path.join(output_dir, "feather_qc")
+            # Missed feathers: the model counts every feather on the numbered overlay. Counting
+            # overlapping feathers is unreliable, so its answer only adds review rows (no letter,
+            # crop or feather ID) and never changes the letters or names of the segmented feathers.
+            inv_items: list[dict] = []
+            if icfg.get("enabled") and vlm_client is not None and feathers_to_save:
+                from src import feather_inventory
+
+                inv_items, inventory, inv_img = feather_inventory.check(
+                    vlm_client, img, [f["full_mask"] for f in feathers_to_save], icfg)
+                os.makedirs(qc_dir, exist_ok=True)
+                inv_name = f"{names['base']}_inventory.jpg"
+                inv_img.save(os.path.join(qc_dir, inv_name), quality=85)
+                inventory["inventory_image"] = f"feather_qc/{inv_name}"
+            else:
+                inventory = {"inventory_status": "disabled", "feathers_segmented": len(feathers_to_save),
+                             "feathers_possibly_missed": 0}
+
             overlay = img.copy()
             green = np.zeros_like(overlay)
             green[:, :, 1] = 255  # Green mask
@@ -540,42 +481,35 @@ class FeatherProcessor:
             for f in feathers:
                 x1, y1, x2, y2 = f["record"]["bbox"]
                 cv2.rectangle(overlay, (x1, y1), (x2, y2), (0, 0, 255), 2)  # Red bounding boxes
-            
+            for it in inv_items:
+                if it["kind"] == "missed":   # where the model saw a feather without a segment (review flag)
+                    xm = int(it["x"])
+                    cv2.line(overlay, (xm, int(img.shape[0] * 0.25)), (xm, int(img.shape[0] * 0.9)), (0, 0, 255), 6)
+                    cv2.putText(overlay, "possible missed", (max(0, xm - 200), int(img.shape[0] * 0.24)),
+                                cv2.FONT_HERSHEY_SIMPLEX, 2.0, (0, 0, 255), 5)
+
             bbox_filename = on.overlay_name(names)
             bbox_filepath = os.path.join(output_dir, bbox_filename)
             cv2.imwrite(bbox_filepath, overlay)
+            # The slide-level VLM judge (metadata + one 1-10 overlay score) is retired: the
+            # label extractor owns bird ID and date, and the inventory plus the per-feather
+            # checks below cover what it asked.
 
-            judge_path = bbox_filepath
-            if self.has_vlm and (self.vlm_scoring_enabled or self.vlm_metadata_enabled):
-                vlm_judge = self._vlm_judge(judge_path)
-
-            if bird_id == "UNKNOWN" and vlm_judge.get("Bird_ID") != "UNKNOWN":
-                bird_id = str(vlm_judge["Bird_ID"])
-                metadata_source = "vlm_fallback"
-            if date == "UNKNOWN" and vlm_judge.get("Date") != "UNKNOWN":
-                date = str(vlm_judge["Date"])
-                metadata_source = "vlm_fallback"
-            if (bird_id == "UNKNOWN" or date == "UNKNOWN") and metadata_source != "vlm_fallback":
-                metadata_source = "unknown"
-
-            feathers_to_save = feathers[: int(cfg["crop"].get("max_feathers", 8))]
-            saved_names, records = [], []
-            jcfg = cfg.get("feather_judge", {})
-            judge_client = self.label_client() if jcfg.get("enabled") else None
-            qc_dir = os.path.join(output_dir, "feather_qc")
-            for idx, feather in enumerate(feathers_to_save, start=1):
+            records = []
+            judge_client = vlm_client if jcfg.get("enabled") else None
+            for i, feather in enumerate(feathers_to_save):
+                letter = on.seq_letter(i)
                 crop = feather["crop"]
                 img_yuv = cv2.cvtColor(crop, cv2.COLOR_BGR2YUV)
                 img_yuv[:, :, 0] = cv2.equalizeHist(img_yuv[:, :, 0])
                 crop_eq = cv2.cvtColor(img_yuv, cv2.COLOR_YUV2BGR)
 
-                filename = on.crop_name(names, idx - 1)
+                filename = on.crop_name(names, i)
                 cv2.imwrite(os.path.join(output_dir, filename), crop_eq)
-                saved_names.append(filename)
-                rec = {"seq": on.seq_letter(idx - 1), "crop": filename, **feather["record"]}
+                rec = {"seq": letter, "crop": filename, "segment_status": "segmented", **feather["record"]}
                 if judge_client is not None:
-                    # per-feather segmentation score; the panel is kept for review
-                    res, panel = feather_judge.judge(judge_client, img, feather["mask"], crop_eq, jcfg)
+                    # per-feather checks on the untrimmed mask; the panel is kept for review
+                    res, panel = feather_judge.judge(judge_client, img, feather["full_mask"], crop_eq, jcfg)
                     os.makedirs(qc_dir, exist_ok=True)
                     qc_name = filename[:-4] + "_qc.jpg"
                     panel.save(os.path.join(qc_dir, qc_name), quality=85)
@@ -589,37 +523,46 @@ class FeatherProcessor:
             if labels is not None:
                 from src import label_extract as lx
 
-                ids = lx.assign_feather_ids(labels, saved_names, names["period"])
+                ids = lx.assign_feather_ids(labels, [r["crop"] for r in records], names["period"],
+                                            seqs=[r["seq"] for r in records])
                 feather_ids = [{**rec, **fid} for rec, fid in zip(records, ids)]
+            if inv_items:
+                from src import feather_inventory
+
+                feather_ids = feather_ids + [
+                    {"feather_id": "", **row} for row in feather_inventory.review_rows(
+                        inv_items, inventory, {i: on.seq_letter(i) for i in range(len(feathers_to_save))})]
+            for rec in feather_ids:
+                rec.update({k: v for k, v in inventory.items() if k != "inventory_raw"})
+            if labels is not None:
                 labels.feathers = feather_ids
 
-            vlm_score = (
-                float(vlm_judge["quality_score_1_to_10"])
-                if self.vlm_scoring_enabled and isinstance(vlm_judge.get("quality_score_1_to_10"), (int, float))
-                else None
-            )
-            vlm_notes = str(vlm_judge.get("notes") or "")
-            if not vlm_notes:
-                if not self.has_vlm:
-                    vlm_notes = "VLM disabled or unavailable at runtime."
-                elif not self.vlm_scoring_enabled:
-                    vlm_notes = "VLM scoring disabled for this run."
-                elif vlm_score is None:
-                    vlm_notes = "VLM returned no numeric quality score."
+            # Slide-level QA, derived from the checks (kept in the existing vlm_* fields of
+            # image_stats so the dashboards keep working): mean derived feather score,
+            # inventory complete, other material / merged feathers in any kept feather.
+            checks = feather_judge.slide_checks(feather_ids)
+            vlm_score = checks["score_mean"]
+            failing = [f"{r['seq']}: {', '.join(feather_judge.failed_checks(r))}" for r in records
+                       if feather_judge.failed_checks(r)]
+            vlm_notes = "; ".join(failing) or ("all feathers passed" if checks["judge_errors"] == 0 and records
+                                               else "")
+            if checks["possible_missed"]:
+                vlm_notes = (vlm_notes + "; " if vlm_notes else "") + f"{checks['possible_missed']} possible missed"
             return ProcessResult(
                 image_path=image_path,
                 success=True,
-                feathers_saved=len(feathers_to_save),
+                feathers_saved=len(records),
                 vlm_score=vlm_score,
                 metadata_source=metadata_source,
                 bird_id=bird_id,
                 date=date,
-                vlm_all_feathers_covered=vlm_judge.get("all_feathers_covered"),
-                vlm_background_leakage_detected=vlm_judge.get("background_leakage_detected"),
-                vlm_green_boxes_grouped_feathers=vlm_judge.get("green_boxes_grouped_feathers"),
+                vlm_all_feathers_covered=checks["all_feathers_covered"],
+                vlm_background_leakage_detected=checks["other_material"],
+                vlm_green_boxes_grouped_feathers=checks["merged_feathers"],
                 vlm_notes=vlm_notes,
                 processing_profile=profile,
                 feather_ids=feather_ids,
+                qa_checks=checks,
             )
         except Exception as exc:  # noqa: BLE001
             logging.exception("Failed to process image %s", image_path)

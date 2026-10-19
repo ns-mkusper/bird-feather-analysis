@@ -342,6 +342,22 @@ def _emit_run_complete(
         print(f"metrics completion emit failed: {exc}")
 
 
+def qa_penalty(res) -> int:
+    """Failed per-feather checks, judge errors and possible missed feathers
+    (src/feather_judge.slide_checks); lower is better. Not a score."""
+    c = getattr(res, "qa_checks", None) or {}
+    return int(c.get("checks_failed", 0)) + int(c.get("judge_errors", 0)) + 2 * int(c.get("possible_missed", 0))
+
+
+def should_retry(res) -> bool:
+    """Retry with the broader prompts when any kept feather failed a check or
+    the inventory flags a possibly missed or merged feather."""
+    if not res.success:
+        return False
+    c = getattr(res, "qa_checks", None) or {}
+    return bool(c.get("feathers_failing") or c.get("possible_missed") or c.get("merged_feathers"))
+
+
 def run_shard(
     input_dir: str,
     output_dir: str,
@@ -429,30 +445,6 @@ def run_shard(
     processor = FeatherProcessor()
     ok = 0
 
-    def qa_penalty(res) -> int:
-        penalty = 0
-        if res.vlm_green_boxes_grouped_feathers is True:
-            # Grouped-box flag is common; penalize hard only when extraction count is low.
-            penalty += 2 if int(res.feathers_saved) <= 3 else 1
-        if res.vlm_background_leakage_detected is True:
-            penalty += 2
-        if res.vlm_all_feathers_covered is False:
-            penalty += 2
-        if res.vlm_score is not None:
-            penalty += max(0, int(10 - float(res.vlm_score)))
-        return penalty
-
-    def should_retry(res) -> bool:
-        if not res.success:
-            return False
-        low_score = res.vlm_score is not None and float(res.vlm_score) <= 6.5
-        low_feather_count = int(res.feathers_saved) <= 4
-        return (
-            (res.vlm_green_boxes_grouped_feathers is True and (low_score or low_feather_count))
-            or res.vlm_background_leakage_detected is True
-            or res.vlm_all_feathers_covered is False
-        )
-
     for idx, path in enumerate(selected, start=1):
         # Label table from the original slide, before (and independent of) segmentation.
         labels = processor.extract_labels(path, output_dir)
@@ -473,15 +465,8 @@ def run_shard(
             if retry_result.success:
                 base_penalty = qa_penalty(result)
                 retry_penalty = qa_penalty(retry_result)
-                choose_retry = False
+                # fewer failed checks wins; a tie keeps the first attempt
                 if retry_penalty < base_penalty:
-                    choose_retry = True
-                elif retry_penalty == base_penalty:
-                    if retry_result.vlm_score is not None and result.vlm_score is not None:
-                        choose_retry = float(retry_result.vlm_score) >= float(result.vlm_score)
-                    else:
-                        choose_retry = True
-                if choose_retry:
                     result = retry_result
                     retry_selected = True
         elapsed_ms = (time.perf_counter() - t0) * 1000.0

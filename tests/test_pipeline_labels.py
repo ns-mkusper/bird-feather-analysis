@@ -26,6 +26,7 @@ class StubResult:
         self.vlm_notes = ""
         self.processing_profile = "default"
         self.feather_ids = []
+        self.qa_checks = {}
 
 
 class StubProcessor:
@@ -52,18 +53,23 @@ class StubProcessor:
 
 
 class DateClient:
-    """Fake VLM: a fixed date for label prompts, a fixed verdict for feather-judge prompts."""
+    """Fake VLM: a fixed date for label prompts, a fixed verdict for the feather
+    judge, and a fixed inventory (total feathers + missed list) for the slide check."""
     model_name = "fake"
 
-    def __init__(self, date="2000-01-01", score=9):
-        self.date, self.score, self.judge_calls = date, score, 0
+    def __init__(self, date="2000-01-01", cut=(), holes=False, total=None, missed=()):
+        self.date, self.cut, self.holes, self.total, self.missed = date, list(cut), holes, total, list(missed)
+        self.judge_calls = 0
 
     def ask(self, image, prompt, timeout=None):
-        if "segmented feather" in prompt:
+        if "Outline, side by side" in prompt:
             self.judge_calls += 1
-            return json.dumps({"score": self.score, "complete": True, "single_feather": True, "fragment": False,
-                               "missing_part": "none", "background_included": False,
-                               "other_feather_included": False, "notes": "clean"})
+            outline = {s: ("cut" if s in self.cut else "complete") for s in ("left", "right", "top", "bottom")}
+            return json.dumps({"outline": outline, "holes_or_gaps": self.holes, "single_feather": True,
+                               "fragment": False, "other_feather_inside": False, "other_material_inside": False,
+                               "score": 9, "notes": "ok"})
+        if "total_feathers" in prompt:
+            return json.dumps({"total_feathers": self.total, "missed": self.missed, "notes": ""})
         return json.dumps({"value": self.date, "visible": "yes", "confidence": 0.99})
 
 
@@ -144,7 +150,7 @@ def test_process_image_writes_new_names_left_to_right(tmp_path):
         return ms
 
     p = object.__new__(FeatherProcessor)
-    p.segmenter, p.has_vlm, p.vlm_scoring_enabled, p.vlm_metadata_enabled = "sam3", False, False, False
+    p.segmenter, p.has_vlm = "sam3", False
     p._label_client = DateClient()
     p._segment_sam3 = lambda *a, **k: ([[200, 20, 230, 180], [20, 20, 50, 180], [110, 20, 140, 180]],
                                        masks_at([200, 20, 110]), "")
@@ -157,7 +163,7 @@ def test_process_image_writes_new_names_left_to_right(tmp_path):
     names = sorted(f.name for f in out.iterdir() if f.is_file())
     assert names == ["CE01168 2008_BoundingBoxes.jpg", "CE01168_2008_Feather_A.jpg",
                      "CE01168_2008_Feather_B.jpg", "CE01168_2008_Feather_C.jpg"]
-    assert all(f["judge_status"] == "ok" and f["judge_score"] == 9 and f["needs_review"] == "" for f in res.feather_ids)
+    assert all(f["judge_status"] == "ok" and f["judge_score"] == 10 and f["needs_review"] == "" for f in res.feather_ids)
     assert all((out / f["qc_image"]).exists() for f in res.feather_ids)
     assert [(f["feather_id"], f["crop"]) for f in res.feather_ids] == [
         ("CE01168V_2008_A", "CE01168_2008_Feather_A.jpg"), ("CE01168V_2008_B", "CE01168_2008_Feather_B.jpg"),
@@ -184,7 +190,7 @@ def test_process_image_names_same_year_slides_by_label_date(tmp_path, sibling_da
     m = np.zeros((200, 300), dtype=np.float32)
     m[20:180, 40:70] = 1
     p = object.__new__(FeatherProcessor)
-    p.segmenter, p.has_vlm, p.vlm_scoring_enabled, p.vlm_metadata_enabled = "sam3", False, False, False
+    p.segmenter, p.has_vlm = "sam3", False
     p._label_client = DateClient()
     p._segment_sam3 = lambda *a, **k: ([[40, 20, 70, 180]], [m], "")
     p._label_client = DateClient(sibling_date)          # the sibling's date reading
@@ -210,7 +216,7 @@ def test_process_image_unreadable_own_date_uses_image_number(tmp_path):
     m = np.zeros((200, 300), dtype=np.float32)
     m[20:180, 40:70] = 1
     p = object.__new__(FeatherProcessor)
-    p.segmenter, p.has_vlm, p.vlm_scoring_enabled, p.vlm_metadata_enabled = "sam3", False, False, False
+    p.segmenter, p.has_vlm = "sam3", False
     p._label_client = DateClient()
     p._segment_sam3 = lambda *a, **k: ([[40, 20, 70, 180]], [m], "")
     name = "BB17692 1998-im0514.jpg"
@@ -237,15 +243,15 @@ def test_process_image_merges_a_sliver_into_its_feather(tmp_path):
     full[1][30:270, 200:240] = 1    # feather B
     full[2][60:220, 194:200] = 1    # sliver touching B's left edge
     p = object.__new__(FeatherProcessor)
-    p.segmenter, p.has_vlm, p.vlm_scoring_enabled, p.vlm_metadata_enabled = "sam3", False, False, False
-    p._label_client = client = DateClient(score=4)
+    p.segmenter, p.has_vlm = "sam3", False
+    p._label_client = client = DateClient(cut=["left"], total=2)
     p._segment_sam3 = lambda *a, **k: ([[40, 30, 80, 270], [200, 30, 240, 270], [194, 60, 200, 220]],
                                        full, "", [0.9, 0.9, 0.4])
     res = p.process_image(str(slide), str(tmp_path / "out"))
     assert res.feathers_saved == 2 and client.judge_calls == 2
     b = res.feather_ids[1]
     assert b["sam_masks"] == 2 and "fragment touching" in b["postprocess"]
-    assert b["needs_review"] == "score 4"           # low judge score is surfaced per feather
+    assert b["judge_score"] == 8 and b["needs_review"] == "outline cut: left"   # surfaced per feather
 
 
 def test_options_override_the_config(tmp_path):
@@ -258,7 +264,7 @@ def test_options_override_the_config(tmp_path):
     m = np.zeros((300, 400), np.float32)
     m[30:270, 40:80] = 1
     p = object.__new__(FeatherProcessor)
-    p.segmenter, p.has_vlm, p.vlm_scoring_enabled, p.vlm_metadata_enabled = "sam3", False, False, False
+    p.segmenter, p.has_vlm = "sam3", False
     p._label_client = client = DateClient()
     seen = {}
     def seg(*a, **k):
@@ -316,3 +322,61 @@ def test_distributed_driver_writes_feathers_without_labels(tmp_path):
     rows = list(_csv.DictReader(open(tmp_path / "labels" / "feathers.csv")))
     assert rows[0]["crop"] == "A0012_1996_Feather_A.jpg" and rows[0]["judge_score"] == "9.0"
     assert rows[0]["bird_id"] == "A0012"        # backup from the file name
+
+
+
+def test_missed_feather_is_a_review_row_and_letters_stay(tmp_path):
+    """Slide with 3 feathers, segmentation found the 1st and 3rd. The model's
+    inventory adds a review row between A and B; letters, crop names and
+    feather IDs come from the segmentation alone (A, B)."""
+    import numpy as np
+    from src.feather_processing import FeatherProcessor
+
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    slide = raw / "CE01168 2008-im2346.jpg"
+    Image.new("RGB", (400, 300), "white").save(slide)
+    ms = [np.zeros((300, 400), np.float32) for _ in range(2)]
+    ms[0][30:270, 40:80] = 1
+    ms[1][30:270, 300:340] = 1
+    p = object.__new__(FeatherProcessor)
+    p.segmenter, p.has_vlm = "sam3", False
+    p._label_client = DateClient(total=3, missed=[{"between": [1, 2], "x_center": 0.48, "partly_hidden": False}])
+    p._segment_sam3 = lambda *a, **k: ([[40, 30, 80, 270], [300, 30, 340, 270]], ms, "", [0.9, 0.9])
+    labels = lx.LabelResult(str(slide), filename=lx.parse_filename(slide.name))
+    labels.fields["bird_id"] = lx.FieldResult("CE01168V", "readable")
+    labels.fields["date"] = lx.FieldResult("2008-05-22", "readable")
+    res = p.process_image(str(slide), str(tmp_path / "out"), labels=labels)
+    got = [(f["seq"], f["segment_status"], f["crop"], f["feather_id"]) for f in res.feather_ids]
+    assert got == [("A", "segmented", "CE01168_2008_Feather_A.jpg", "CE01168V_2008_A"),
+                   ("B", "segmented", "CE01168_2008_Feather_B.jpg", "CE01168V_2008_B"),
+                   ("missed_1", "possible_missed", "", "")]
+    flag = res.feather_ids[2]
+    assert "between A and B" in flag["needs_review"] and flag["inventory_status"] == "missed"
+    assert res.feathers_saved == 2 and res.qa_checks["possible_missed"] == 1
+    assert res.vlm_all_feathers_covered is False             # slide-level field derived from the inventory
+    assert sorted(f.name for f in (tmp_path / "out").glob("*_Feather_*.jpg")) == \
+        ["CE01168_2008_Feather_A.jpg", "CE01168_2008_Feather_B.jpg"]
+    row = labels.row()
+    assert row["feather_count"] == 2 and row["feather_ids"] == "CE01168V_2008_A;CE01168V_2008_B"
+    assert row["possible_missed"] == 1
+    rows = lx.feather_table_rows(labels, "r")
+    assert rows[2]["segment_status"] == "possible_missed" and rows[2]["crop"] == ""
+    assert rows[2]["feathers_possibly_missed"] == 1
+
+
+def test_retry_and_choice_follow_the_checks():
+    from types import SimpleNamespace as NS
+
+    from src import full_run_sharded as frs
+
+    clean = NS(success=True, qa_checks={"feathers_failing": 0, "checks_failed": 0, "judge_errors": 0,
+                                         "possible_missed": 0, "merged_feathers": False, "score_mean": 4.0})
+    cut = NS(success=True, qa_checks={"feathers_failing": 1, "checks_failed": 2, "judge_errors": 0,
+                                       "possible_missed": 0, "merged_feathers": False, "score_mean": 9.5})
+    missed = NS(success=True, qa_checks={"feathers_failing": 0, "checks_failed": 0, "possible_missed": 1})
+    assert not frs.should_retry(clean)            # a low mean score alone never triggers a retry
+    assert frs.should_retry(cut) and frs.should_retry(missed)
+    assert not frs.should_retry(NS(success=False, qa_checks={"feathers_failing": 3}))
+    assert frs.qa_penalty(clean) == 0 and frs.qa_penalty(cut) == 2 and frs.qa_penalty(missed) == 2
+    assert frs.qa_penalty(NS(success=True)) == 0  # results without checks (old workers)

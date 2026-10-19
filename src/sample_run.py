@@ -31,7 +31,7 @@ REPO = Path(__file__).resolve().parent.parent
 def run(n: int = 5, seed: int = 0, match: list[str] | None = None, timeout: int = 900,
         run_id: str | None = None, options: dict | None = None) -> Path:
     """`options`: {'segmentation': {...}} overrides for the workers' segmentation
-    config in this run (needs workers on the label-extract-fallbacks code or later)."""
+    config in this run (needs workers on the feather-judge code or later)."""
     config = load_notebook_config_from_env()
     assert_tcp_reachable(config.broker_url, "Broker")
     app = create_celery_client(config)
