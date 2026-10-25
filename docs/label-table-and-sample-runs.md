@@ -37,10 +37,26 @@ the per-feather check (confirmed on a second look) calls it a fragment or not a 
 saved as `CE01168_2008_Fragment_1.jpg` with its QC image, and listed in `feathers.csv` as a review row
 (`segment_status` `fragment`, no feather ID). The letters skip it.
 
+## Label statuses and slide columns
+
+- **`partly_visible`**: the model saw the text only partly. For **bird ID and date** (the feather IDs are built
+  from them) that is never readable, whatever the model's confidence: it reported 0.85-0.95 for a bird ID with its
+  prefix covered, and confidence is 1.0 on almost every fully visible reading, so it is no guard. **Species and sex**
+  (short, low-variance text) accept a partly visible reading from confidence 0.6, **age** from 0.8; an accepted
+  one is still listed in `label_problems`.
+- **`inferred`** (sex, species): the slide's own reading is not usable, and the same bird's other slides (same
+  readable bird ID) all agree; the source slides are named in the field's note. Never inferred from an uncertain
+  bird ID; age is never inferred (it changes between years).
+- Slide columns, also repeated per feather: `label_problems` (every reason to be careful with the label, in words),
+  `label_note`, `photos_same_year` / `multiple_photos_same_year` (slides of this bird ID in this year across the
+  whole collection, by file name), `handwritten` / `handwritten_fields` (from a check of the label strip).
+- `scripts/rebuild_run.py` rebuilds a finished run's crops and tables under the current rules into new folders,
+  from its saved masks and label readings, without the cluster or the model.
+
 ## Feathers usable for analysis
 
 `feathers.csv` has every feather, fragment and review row. Its `usable` column is `yes` for a feather
-with an ID that passed its checks and is not a duplicate; otherwise `excluded_because` says why
+with an ID that passed its checks, is not a duplicate, and whose slide's bird ID and date are both readable; otherwise `excluded_because` says why
 (a failed check, `duplicate of ...`, `fragment`, a review row). Checks failed on one look only
 (`review_uncertain`) and label problems (`label_needs_review`) do not exclude a feather.
 `feathers_usable.csv` has only the usable rows; `summary.json` counts `feathers_usable` and `fragments`.

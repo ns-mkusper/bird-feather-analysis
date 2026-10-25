@@ -53,3 +53,10 @@ def test_never_cuts_most_of_a_feather_away():
     img, mask = _feather(blob=True)
     out, cut, notes = mc.clean(img, mask, {"base_frac": 1.0, "min_keep_frac": 0.99})
     assert cut is None and (out == mask).all() and "skipped" in notes[0]
+
+
+def test_calamus_cut_on_the_board_keeps_the_vane():
+    img, mask = _feather(blob=False, background=30)
+    out, cut, notes = mc.clean(img, mask, {"calamus": {"enabled": True}})
+    assert cut is not None and 278 <= cut <= 285 and "calamus" in notes[0]
+    assert out[40:278].sum() == mask[40:278].sum() and not out[cut:].any()

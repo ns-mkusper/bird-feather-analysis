@@ -242,14 +242,27 @@ def test_malformed_answer_is_a_technical_failure_and_next_crop_is_tried(img):
 
 
 def test_partly_visible_code_needs_confidence(img):
+    """Sex and species (short, low-variance text) accept a partly visible reading from 0.6;
+    age from 0.8; bird ID and date never (their feather IDs depend on them)."""
     cfg = lx.load_config()
-    spec = cfg["fields"]["sex"]
-    f = lx.read_field(FakeClient([_ans("F", "partly", 0.6)]), img, "sex", spec, cfg)
-    assert f.status == "needs_review" and "partly visible" in f.note and len(f.attempts) == 1
-    f = lx.read_field(FakeClient([_ans("M", "partly", 0.95)]), img, "sex", spec, cfg)
-    assert f.status == "readable" and "partly visible" in f.note
+    f = lx.read_field(FakeClient([_ans("F", "partly", 0.5)]), img, "sex", cfg["fields"]["sex"], cfg)
+    assert f.status == "partly_visible" and "partly visible" in f.note and len(f.attempts) == 1
+    f = lx.read_field(FakeClient([_ans("M", "partly", 0.6)]), img, "sex", cfg["fields"]["sex"], cfg)
+    assert f.status == "readable" and "partly visible (accepted)" in f.note
+    f = lx.read_field(FakeClient([_ans("2K", "partly", 0.7)]), img, "age", cfg["fields"]["age"], cfg)
+    assert f.status == "partly_visible"
+    f = lx.read_field(FakeClient([_ans("BZ11933H", "partly", 0.95)]), img, "bird_id", cfg["fields"]["bird_id"], cfg)
+    assert f.status == "partly_visible" and f.value == "BZ11933H"     # value kept, not trusted
 
 
+def test_reclassify_applies_the_current_rules_without_the_model():
+    cfg = lx.load_config()
+    a = lx.Attempt(crop="primary", region=[0, 0, 1, 1], value="BZ11933H", visible="partly", confidence=0.85,
+                   raw="", seconds=1.0)
+    r = lx.LabelResult("BZ11933 2007-im2197.jpg")
+    r.fields["bird_id"] = lx.FieldResult("BZ11933H", "readable", 0.85, source="primary",
+                                         note="partly visible, confidence 0.85", attempts=[a])
+    assert lx.reclassify(r, cfg) == 1 and r.fields["bird_id"].status == "partly_visible" and r.needs_review
 
 
 def test_feather_ids_from_label_and_filename_backup():
@@ -327,3 +340,21 @@ def test_feather_ids_use_full_date_for_same_year_slides(tmp_path):
     # the sibling's date is unknown, so it might be the same day -> image number
     assert a.feathers[0]["feather_id"] == "BB17692H_19980612-im0513_A"
     assert b.feathers[1]["feather_id"] == "BB17692H_1998-im0514_B"
+
+
+def test_handwriting_check_flags_any_region_with_handwriting(img):
+    class Client:
+        def __init__(self, answers):
+            self.answers = list(answers)
+
+        def ask(self, image, prompt, timeout=None, max_tokens=None):
+            return self.answers.pop(0)
+
+    cfg = lx.load_config()
+    h = {**cfg["handwriting"], "enabled": True}
+    out = lx.check_handwriting(Client(['{"handwritten": false, "fields": [], "notes": "ok"}',
+                                       '{"handwritten": true, "fields": ["date"], "notes": "date overwritten"}']),
+                               img, h, cfg)
+    assert out["handwritten"] == "yes" and out["handwritten_fields"] == "date" and "overwritten" in out["label_note"]
+    out = lx.check_handwriting(Client(['{"handwritten": false}', "garbled"]), img, h, cfg)
+    assert out["handwritten"] == ""          # one region unanswered: unknown, not 'no'

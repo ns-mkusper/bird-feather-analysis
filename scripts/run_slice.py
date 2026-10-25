@@ -36,6 +36,8 @@ def main() -> int:
     ap.add_argument("--gold", default="data/label_gold.csv")
     ap.add_argument("--remote", default="gdrive:Feather_Molt_Project/runs")
     ap.add_argument("--no-upload", action="store_true")
+    ap.add_argument("--handwriting", help="hand-check CSV of handwritten labels (file_id, handwritten, fields, note, "
+                                          "source); wins over the model's check")
     ap.add_argument("--keep-node-outputs", action="store_true",
                     help="keep data/runs/<run-id>/ on the nodes after the Drive upload (default: delete once verified)")
     ap.add_argument("--allow-old-workers", action="store_true", help="run even if the workers lack the new code")
@@ -73,7 +75,14 @@ def main() -> int:
             if item.get("feather_ids"):
                 r.feathers = item["feather_ids"] if not r.feathers else r.feathers
             fh.write(json.dumps(r.to_json()) + "\n")
-    summary = lx.finish_run(out, names, lx.load_config(), args.gold, seg_dir)
+    try:   # all slide names, for photos of the same bird in the same year
+        from src.notebook_remote_runtime import RemoteClusterIO, load_notebook_config_from_env
+
+        all_names = [Path(p).name for p in RemoteClusterIO(load_notebook_config_from_env()).list_remote_images()]
+    except Exception as exc:  # noqa: BLE001
+        print(f"could not list all slides ({exc}); photos_same_year left empty")
+        all_names = None
+    summary = lx.finish_run(out, names, lx.load_config(), args.gold, seg_dir, all_names, handwriting=args.handwriting)
     summary["slides_without_result"] = failed
     summary["task_failures"] = [(n, (res.get(n) or {}).get("reason")) for n in names
                                 if (res.get(n) or {}).get("success") is False]

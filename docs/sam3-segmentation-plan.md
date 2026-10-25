@@ -139,7 +139,11 @@ Next:
 - **Re-segmenting oversized masks on a crop: not needed.** SAM 3 returned no merged masks in either run;
   the one merged crop came from the clean-up (rule 3, fixed above).
 
-## Open question: keep the quill (stem) or cut to the full vane? (2026-10-20)
+## Decided: vane only, the quill (calamus) is cut (2026-10-25)
+
+The analysis aims at the vane, so the calamus can be cropped out (supervisor's input, 2026-10-25): `crop.cleanup.calamus` cuts the bare quill below the vane on every feather. The question as it was recorded:
+
+### Open question: keep the quill (stem) or cut to the full vane? (2026-10-20)
 
 **Current behaviour (`crop.cleanup`):** on the white card, each feather is cut where its vane narrows to the quill.
 That removes the glue dots, glue specks and the see-through downy base, but also the quill.

@@ -221,10 +221,12 @@ def seed_labels(run_id: str, from_run: str, names: list[str] | None = None) -> d
 
 
 def launch_run(names: list[str], run_id: str, upload: bool = True, timeout_h: float | None = None,
-               dry_run: bool = False, reuse_labels_from: str | None = None) -> dict:
+               dry_run: bool = False, reuse_labels_from: str | None = None,
+               handwriting: str | Path | None = None) -> dict:
     """Starts scripts/run_slice.py for `names` as a detached process. Returns
     the run record (also written to data/run_control/<run_id>.json). `reuse_labels_from`:
-    an earlier run whose label results the workers reuse (seed_labels)."""
+    an earlier run whose label results the workers reuse (seed_labels). `handwriting`: a
+    hand-check CSV of handwritten labels for the tables (run_slice --handwriting)."""
     CONTROL.mkdir(parents=True, exist_ok=True)
     if _record(run_id).exists() and is_running(run_id):
         raise RuntimeError(f"{run_id} is already running")
@@ -235,7 +237,8 @@ def launch_run(names: list[str], run_id: str, upload: bool = True, timeout_h: fl
     est_h = len(names) * SECONDS_PER_SLIDE_PER_WORKER / n_workers / 3600
     timeout_s = int((timeout_h or max(2.0, est_h * 3)) * 3600)
     cmd = [sys.executable, "-u", str(REPO / "scripts" / "run_slice.py"), "--manifest", str(manifest),
-           "--run-id", run_id, "--timeout", str(timeout_s)] + ([] if upload else ["--no-upload"])
+           "--run-id", run_id, "--timeout", str(timeout_s)] + ([] if upload else ["--no-upload"]) \
+        + (["--handwriting", str(Path(handwriting).resolve())] if handwriting else [])
     rec = {"run_id": run_id, "slides": len(names), "log": str(log), "manifest": str(manifest), "cmd": cmd,
            "upload": upload, "started": datetime.now(timezone.utc).isoformat(timespec="seconds"),
            "estimate_h": round(est_h, 2)}

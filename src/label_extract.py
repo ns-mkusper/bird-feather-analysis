@@ -84,7 +84,9 @@ SEQ_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 PLAIN_TEXT = re.compile(r"^[A-Za-z0-9 +\-./:;,'()]*$")
 
 READABLE = "readable"
-REVIEW_STATUSES = {"partial", "needs_review", "conflict", "filename_fallback", "model_error"}
+REVIEW_STATUSES = {"partial", "needs_review", "partly_visible", "conflict", "filename_fallback", "model_error"}
+# label fields the feather IDs are built from: a feather whose slide has one of these untrusted is not usable
+ID_FIELDS = ("bird_id", "date")
 NA = "N/A"
 
 
@@ -126,6 +128,9 @@ class LabelResult:
     node: str = ""
     model: str = ""
     feathers: list[dict] = field(default_factory=list)  # from segmentation, left to right
+    # slide-level facts added after reading (annotate_slides): label_problems, photos_same_year,
+    # handwriting, inferred fields
+    extra: dict = field(default_factory=dict)
 
     @property
     def file_id(self) -> str:
@@ -178,6 +183,9 @@ class LabelResult:
         out["feather_count"] = len(seg) if self.feathers else None
         out["feather_ids"] = ";".join(f["feather_id"] for f in seg if f.get("feather_id"))
         out["possible_missed"] = sum(f.get("segment_status") == "possible_missed" for f in self.feathers)
+        for k in ("label_problems", "label_note", "photos_same_year", "multiple_photos_same_year", "handwritten",
+                  "handwritten_fields", "handwritten_model"):
+            out[k] = self.extra.get(k)
         return out
 
     def id_parts(self) -> dict:
@@ -208,7 +216,7 @@ class LabelResult:
              "extractor": EXTRACTOR_VERSION, "seconds": round(self.seconds, 2),
              "node": self.node, "model": self.model, "feathers": self.feathers,
              "filename": self.filename, "needs_review": self.needs_review,
-             "fields": {k: asdict(v) for k, v in self.fields.items()}}
+             "fields": {k: asdict(v) for k, v in self.fields.items()}, "extra": self.extra}
         d["date_parts"] = {k: {"value": v, "status": s} for k, (v, s) in self.date_parts().items()}
         return d
 
@@ -216,7 +224,7 @@ class LabelResult:
     def from_json(cls, d: dict) -> "LabelResult":
         r = cls(d["image"], filename=d.get("filename", {}), seconds=d.get("seconds", 0),
                 extracted_at=d.get("extracted_at", ""), node=d.get("node", ""), model=d.get("model", ""),
-                feathers=d.get("feathers") or [])
+                feathers=d.get("feathers") or [], extra=d.get("extra") or {})
         for k, v in d.get("fields", {}).items():
             atts = [Attempt(**a) for a in v.pop("attempts", [])]
             r.fields[k] = FieldResult(**v, attempts=atts)
@@ -512,12 +520,16 @@ def _classify(a: "Attempt", spec: dict, cfg: dict) -> tuple[str, str]:
     if pattern and not re.match(pattern, value):
         return "needs_review", "format"
     if visible == "partly":
-        # A code read from partly hidden characters: accept only when the
-        # model is confident, otherwise it is an inference -> review.
+        # Characters partly hidden. The model's confidence is not a reliable guard (it reported
+        # 0.85-0.95 for a bird ID with its prefix covered), so fields set to partial "review"
+        # (bird ID, date: the feather IDs depend on them) are never readable then; others are
+        # accepted at partial_min_confidence (short, low-variance text such as sex or species).
+        if spec.get("partial") == "review":
+            return "partly_visible", f"partly visible, confidence {a.confidence}"
         floor = float(spec.get("partial_min_confidence", cfg.get("partial_min_confidence", 0.8)))
         if a.confidence is None or a.confidence < floor:
-            return "needs_review", f"partly visible, confidence {a.confidence}"
-        return READABLE, f"partly visible, confidence {a.confidence}"
+            return "partly_visible", f"partly visible, confidence {a.confidence}"
+        return READABLE, f"partly visible (accepted), confidence {a.confidence}"
     return READABLE, ""
 
 
@@ -573,7 +585,7 @@ def read_field(client: VLMClient, image: Image.Image, name: str, spec: dict, cfg
         if st in (READABLE, "partial"):
             best, why = (a, st), reason
             break
-        if st == "needs_review" and reason != "format":
+        if st == "partly_visible" or (st == "needs_review" and reason != "format"):
             best, why = (a, st), reason  # seen but uncertain: other crops show the same hidden text
             break
         if st == "needs_review" and best is None:
@@ -607,6 +619,28 @@ def read_field(client: VLMClient, image: Image.Image, name: str, spec: dict, cfg
                 res.status = "needs_review"
                 res.note = f"readings disagree: {a.value!r} ({a.crop}) vs {v.value!r} ({other[0]})"
     return res
+
+
+def reclassify(result: LabelResult, cfg: dict) -> int:
+    """Re-derives each field's status from its stored answers under the current rules
+    (_classify), without asking the model again: for results read under older rules.
+    Fields resolved otherwise (not_found, model_error, filename, conflict, disagreeing
+    readings, partial dates) are left as they are. Returns the number of fields changed."""
+    changed = 0
+    for name, f in result.fields.items():
+        spec = cfg["fields"].get(name, {})
+        if f.status not in (READABLE, "needs_review", "partly_visible") or f.note.startswith("readings disagree"):
+            continue
+        a = next((x for x in f.attempts if x.crop == f.source and not x.error), None)
+        if a is None:
+            continue
+        st, reason = _classify(a, spec, cfg)
+        if st == "needs_review" and reason == "format":
+            continue
+        if (st, reason) != (f.status, f.note):
+            f.status, f.note = st, reason
+            changed += 1
+    return changed
 
 
 def apply_filename(result: LabelResult, cfg: dict) -> None:
@@ -643,6 +677,32 @@ def check_against_filename(result: LabelResult) -> None:
     apply_filename(result, {})
 
 
+def check_handwriting(client, image: Image.Image, hcfg: dict, cfg: dict) -> dict:
+    """Asks whether any label text is handwritten (written, corrected or crossed out by hand),
+    on each region in hcfg['regions'] (label strip, date corner). Returns extra columns:
+    handwritten 'yes'|'no'|'' (unknown: the request failed), handwritten_fields, label_note."""
+    found, fields, notes, failed = False, [], [], False
+    for region in hcfg.get("regions", []):
+        crop = crop_field(image, region, cfg["vlm"].get("crop_max_side", 1024))
+        try:
+            text = client.ask(crop, hcfg["prompt"], max_tokens=int(hcfg.get("max_tokens", 120)))
+            m = re.search(r"\{.*\}", text or "", re.S)
+            d = json.loads(m.group(0)) if m else None
+            if not isinstance(d, dict) or not isinstance(d.get("handwritten"), bool):
+                raise ValueError("no handwriting answer")
+        except Exception:  # noqa: BLE001
+            failed = True
+            continue
+        if d.get("handwritten") is True:
+            found = True
+            fields += [str(x) for x in d.get("fields") or []]
+            if d.get("notes"):
+                notes.append(str(d["notes"]))
+    return {"handwritten": "yes" if found else ("" if failed else "no"),
+            "handwritten_fields": ", ".join(dict.fromkeys(fields)), "label_note": "; ".join(notes),
+            "handwriting_source": "model"}
+
+
 def extract(image_path: str | Path, cfg: dict | None = None, client: VLMClient | None = None,
             fields: list[str] | None = None, evidence_dir: str | Path | None = None) -> LabelResult:
     cfg = cfg or load_config()
@@ -658,6 +718,8 @@ def extract(image_path: str | Path, cfg: dict | None = None, client: VLMClient |
         if spec:
             result.fields[name] = read_field(client, image, name, spec, cfg, ev_dir)
     apply_filename(result, cfg)
+    if (cfg.get("handwriting") or {}).get("enabled") and fields is None:
+        result.extra.update(check_handwriting(client, image, cfg["handwriting"], cfg))
     result.seconds = time.monotonic() - t0
     result.model = getattr(client, "model_name", "")
     result.node = socket.gethostname()
@@ -689,6 +751,7 @@ def extract_for_pipeline(image_path: str | Path, output_dir: str | Path, client,
             d = json.loads(cache.read_text())
             r = LabelResult.from_json(d)
             if d.get("extractor") == EXTRACTOR_VERSION and not r.has_model_error:
+                reclassify(r, cfg or load_config())       # cached under older rules: re-derive statuses
                 return r
         except (ValueError, TypeError, KeyError):
             pass
@@ -785,7 +848,8 @@ CREATE TABLE IF NOT EXISTS specimen_labels (
 # slide's label fields, the segmentation measurements and the VLM judge.
 FEATHER_TABLE_COLS = [
     "run_id", "node_id", "file_id", "feather_id", "seq", "segment_status", "usable", "excluded_because",
-    "duplicate_of", "needs_review", "label_needs_review",
+    "duplicate_of", "needs_review", "label_needs_review", "label_problems", "label_note", "photos_same_year",
+    "multiple_photos_same_year", "handwritten", "handwritten_fields",
     "bird_id", "bird_id_status", "bird_id_source", "species", "species_status", "age", "age_status",
     "sex", "sex_status", "year", "month", "day", "date_status", "year_source", "period",
     "crop", "qc_image", "mask_image", "bbox", "area_px", "length_px", "width_px", "angle_deg", "touches_border",
@@ -839,11 +903,22 @@ def feather_table_rows(r: "LabelResult", run_id: str = "", node_id: str = "") ->
         row["bird_id"] = f.get("bird_id") or parts.get("bird_id") or slide.get("bird_id")
         row["bird_id_status"] = slide.get("bird_id_status")
         row["bird_id_source"] = f.get("bird_id_source") or parts.get("bird_id_source")
+        slide_cols = {"species", "species_status", "age", "age_status", "sex", "sex_status", "year", "month",
+                      "day", "date_status", "bird_id", "bird_id_status"}
         for c in FEATHER_TABLE_COLS:
-            if c in f and c not in ("bird_id",):
+            # label columns come from the slide's current reading, never from the copy a feather
+            # record kept when its ID was assigned (statuses can be re-derived later: reclassify)
+            if c in f and c not in slide_cols:
                 v = f[c]
                 row[c] = json.dumps(v) if isinstance(v, (list, dict)) else v
         ok, why = usable(f)
+        if ok:   # the feather ID rests on the slide's bird ID and date: both must be read with confidence
+            untrusted = [n for n in ID_FIELDS if (fr := r.fields.get(n)) is not None and fr.status not in (READABLE,)]
+            if untrusted:
+                ok, why = False, "label: " + ", ".join(f"{n} {r.fields[n].status.replace('_', ' ')}" for n in untrusted)
+        for k in ("label_problems", "label_note", "photos_same_year", "multiple_photos_same_year", "handwritten",
+                  "handwritten_fields"):
+            row[k] = r.extra.get(k)
         row["usable"], row["excluded_because"] = ("yes" if ok else "no"), why
         rows.append(row)
     return rows
@@ -1266,13 +1341,18 @@ def score_feather_counts(results: list[LabelResult], gold_csv: str | Path) -> di
 
 def finish_run(out: Path, chosen: list[str], cfg: dict, gold: str | Path | None = None,
                segmentation_dir: str | Path | None = None, siblings: list[str] | None = None,
-               feather_scores: str | Path | None = None) -> dict:
+               feather_scores: str | Path | None = None, handwriting: str | Path | None = None) -> dict:
     """Writes labels.csv, review.csv, feathers.csv, labels.sqlite3 and
     summary.json from out/labels.jsonl (the latest result per slide), with
     feather IDs from a segmentation output folder when given, and scores
     against gold."""
     final = load_previous(out / "labels.jsonl")
     results = [final[Path(p).name] for p in chosen if Path(p).name in final]
+    from src import slide_annotations
+
+    for r in results:
+        reclassify(r, cfg)            # the current reading rules, without asking the model again
+    slide_annotations.annotate(results, siblings, slide_annotations.load_handwriting(handwriting))
     if segmentation_dir and Path(segmentation_dir).exists():
         attach_feathers_from_crops(results, segmentation_dir, siblings)
         from src import feather_duplicates
@@ -1299,7 +1379,14 @@ def finish_run(out: Path, chosen: list[str], cfg: dict, gold: str | Path | None 
     summary["feather_score_mean"] = round(sum(scored) / len(scored), 2) if scored else None
     summary["feathers_needing_review"] = sum(bool(f.get("needs_review")) for r in results for f in segmented(r.feathers))
     summary["fragments"] = sum(f.get("segment_status") == "fragment" for r in results for f in r.feathers)
-    summary["feathers_usable"] = sum(usable(f)[0] for r in results for f in r.feathers)
+    summary["feathers_usable"] = sum(row["usable"] == "yes" for r in results for row in feather_table_rows(r))
+    summary["slides_with_label_problems"] = sum(bool(r.extra.get("label_problems")) for r in results)
+    summary["fields_partly_visible"] = {n: sum(r.fields[n].status == "partly_visible" for r in results if n in r.fields)
+                                        for n in FIELDS_ORDER}
+    summary["fields_inferred_from_same_bird"] = {n: sum(r.fields[n].status == "inferred" for r in results if n in r.fields)
+                                                 for n in ("sex", "species")}
+    summary["slides_with_multiple_photos_same_year"] = sum(bool(r.extra.get("multiple_photos_same_year")) for r in results)
+    summary["slides_handwritten"] = sum(r.extra.get("handwritten") == "yes" for r in results)
     if gold and Path(gold).exists():
         summary["gold"] = score_against_gold(results, gold, cfg)
         summary["gold_feather_count"] = score_feather_counts(results, gold)
