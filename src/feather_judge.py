@@ -68,18 +68,21 @@ def mask_metrics(mask: np.ndarray, min_hole_frac: float = 0.002, min_part_frac: 
 
 
 def straight_outline(mask: np.ndarray, eps: float = 2.0, min_frac: float = 0.15,
-                     across_deg: float = 25.0) -> dict[str, float]:
+                     across_deg: float = 25.0) -> dict:
     """Ruler-straight stretches of the mask outline, as shares of the feather's length: where the
     edge of the board, a card or another feather lies on it (feather outlines are curved and ragged).
     Measured at half resolution; the saved crop's horizontal bottom trim line is ignored.
     across: total of runs at `across_deg` or more to the feather's long axis (board edges cutting
     across it); along_longest: the longest run along the axis (a covered side; natural straight
-    outer vanes and quill sides give shorter ones); total and longest of all runs."""
+    outer vanes and quill sides give shorter ones); total and longest of all runs.
+    along_runs: the runs along the axis as [x0, y0, x1, y1, share] in the mask's own pixels, for
+    the slide check in cover_edge."""
     m = cv2.resize(mask.astype(np.uint8), None, fx=0.5, fy=0.5, interpolation=cv2.INTER_NEAREST)
     cnts, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
     out = {"total": 0.0, "longest": 0.0, "across": 0.0, "along_longest": 0.0}
+    runs: list[list[float]] = []
     if not cnts:
-        return out
+        return {**out, "along_runs": runs}
     c = max(cnts, key=cv2.contourArea)
     ys, xs = c[:, 0, 1], c[:, 0, 0]
     length = max(int(ys.max() - ys.min()), int(xs.max() - xs.min()), 1)
@@ -100,17 +103,68 @@ def straight_outline(mask: np.ndarray, eps: float = 2.0, min_frac: float = 0.15,
             out["across"] += share
         else:
             out["along_longest"] = max(out["along_longest"], share)
-    return {k: round(v, 3) for k, v in out.items()}
+            runs.append([2.0 * float(a[0]), 2.0 * float(a[1]), 2.0 * float(b[0]), 2.0 * float(b[1]), round(share, 3)])
+    return {**{k: round(v, 3) for k, v in out.items()}, "along_runs": runs}
 
 
-def hidden_level(straight: dict, rel_area: float | None, cfg: dict) -> str:
+def _across_steps(gray: np.ndarray, a: np.ndarray, b: np.ndarray, t0: float, t1: float, d: float,
+                  step: float = 4.0) -> np.ndarray:
+    """Grey-level steps across the line a->b (pixels `d` to either side), every `step` px from
+    t0 to t1 along it (in px from a; negative = before a). Points off the slide are skipped."""
+    u = (b - a) / np.linalg.norm(b - a)
+    nrm = np.array([-u[1], u[0]])
+    h, w = gray.shape
+    out = []
+    for t in np.arange(t0, t1, step):
+        q1, q2 = a + u * t + nrm * d, a + u * t - nrm * d
+        if all(0 <= q[0] < w and 0 <= q[1] < h for q in (q1, q2)):
+            out.append(float(gray[int(q1[1]), int(q1[0])]) - float(gray[int(q2[1]), int(q2[0])]))
+    return np.array(out)
+
+
+def cover_edge(gray: np.ndarray, run: list[float], length_px: float, h: dict) -> float:
+    """How surely a straight run along the feather is the edge of something lying on it, from the
+    slide (blurred grey): the edge of a board or card is straight beyond the feather too, while a
+    feather's own straight vane edge ends with the feather. Extends the run by `edge_ext_frac` of
+    the feather's length past each end and returns the larger share of points there with a grey
+    step of `edge_step` or more across the line (`edge_offset_px` to either side). A run on the
+    slide's border (the feather runs off the scan) is 1.0."""
+    a, b = np.array(run[:2], float), np.array(run[2:4], float)
+    hh, ww = gray.shape
+    m = 4
+    if (min(a[0], b[0]) >= ww - m or max(a[0], b[0]) < m or min(a[1], b[1]) >= hh - m or max(a[1], b[1]) < m):
+        return 1.0
+    n = float(np.linalg.norm(b - a))
+    ext, gap = float(h.get("edge_ext_frac", 0.12)) * length_px, 0.02 * length_px
+    d, step_min = float(h.get("edge_offset_px", 6)), float(h.get("edge_step", 40))
+    best = 0.0
+    for t0, t1 in ((-ext, -gap), (n + gap, n + ext)):
+        steps = _across_steps(gray, a, b, t0, t1, d)
+        if len(steps) >= 5:
+            best = max(best, float(np.mean(np.abs(steps) >= step_min)))
+    return round(best, 3)
+
+
+def hidden_level(straight: dict, rel_area: float | None, cfg: dict, slide_bgr: np.ndarray | None = None) -> str:
     """'none' | 'part' | 'most' from the straight outline (straight_outline) and the feather's area
     relative to the slide's median feather (a mostly covered feather shows only a small piece).
     Hidden: straight runs across the feather add up to `across_frac`, or one run along it reaches
-    `along_frac` (checked by eye on the 100-slide run: 11 of 12 hidden feathers, none of the
-    straight outer vanes or quills)."""
+    `along_frac`. With the slide given and `edge_check` on, a run along it counts only when it is
+    the edge of something lying on the feather (cover_edge reaches `edge_frac`): short feathers'
+    straight outer vanes reach along_frac too (A0028 im1063 D, A0201 im1032 D in full-20261026)."""
     h = cfg.get("hidden") or {}
-    if straight["across"] < float(h.get("across_frac", 0.2)) and straight["along_longest"] < float(h.get("along_frac", 0.33)):
+    across = straight["across"] >= float(h.get("across_frac", 0.2))
+    along_frac = float(h.get("along_frac", 0.33))
+    along = straight["along_longest"] >= along_frac
+    if along and not across and slide_bgr is not None and h.get("edge_check", False):
+        gray = slide_bgr if slide_bgr.ndim == 2 else cv2.cvtColor(slide_bgr, cv2.COLOR_BGR2GRAY)
+        gray = cv2.GaussianBlur(gray, (5, 5), 0)
+        long_runs = [r for r in straight.get("along_runs", []) if r[4] >= along_frac]
+        length = max((float(np.hypot(r[2] - r[0], r[3] - r[1])) / r[4] for r in long_runs), default=0.0)
+        edges = [cover_edge(gray, r, length, h) for r in long_runs]
+        straight["cover_edge"] = max(edges, default=0.0)
+        along = straight["cover_edge"] >= float(h.get("edge_frac", 0.25))
+    if not (across or along):
         return "none"
     if rel_area is not None and rel_area < float(h.get("most_max_rel_area", 0.6)):
         return "most"
@@ -267,9 +321,11 @@ def judge(client, slide_bgr, mask, crop_bgr, cfg: dict, rel_area: float | None =
         h = cfg["hidden"]
         st = straight_outline(raw_mask if raw_mask is not None else mask, float(h.get("eps", 2.0)),
                               float(h.get("min_frac", 0.15)), float(h.get("across_deg", 25.0)))
+        metrics["hidden"] = hidden_level(st, rel_area, cfg, slide_bgr)
         metrics.update({"straight_outline": st["total"], "straight_longest": st["longest"],
                         "straight_across": st["across"], "straight_along": st["along_longest"]})
-        metrics["hidden"] = hidden_level(st, rel_area, cfg)
+        if "cover_edge" in st:
+            metrics["straight_cover_edge"] = st["cover_edge"]
     panel = context_panel(slide_bgr, mask, cfg)
     try:
         raw = client.ask(panel, cfg["prompt"], max_tokens=cfg.get("max_tokens", 220))

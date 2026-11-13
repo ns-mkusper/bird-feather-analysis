@@ -133,7 +133,13 @@
       "most_max_rel_area": 0.6,
       "across_deg": 25.0,
       "across_frac": 0.2,
-      "along_frac": 0.33
+      "along_frac": 0.33,
+      "_comment_edge": "edge_check: a run along the feather counts only when it is the edge of something lying on it: extended by edge_ext_frac of the feather's length past each end, edge_frac of the points there show a grey step of edge_step or more across the line (edge_offset_px to either side), or the run lies on the slide's border. A feather's own straight outer vane ends with the feather. full-20261026: 40 of 56 along-only flags were such vane edges on short feathers (A0028 im1063 D, A0201 im1032 D).",
+      "edge_check": true,
+      "edge_ext_frac": 0.12,
+      "edge_offset_px": 6,
+      "edge_step": 40,
+      "edge_frac": 0.25
     },
     "needs_support": [
       "holes_or_gaps",

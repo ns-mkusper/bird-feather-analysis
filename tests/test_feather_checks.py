@@ -180,6 +180,29 @@ def test_straight_outline_and_hidden_level():
     vane = {"total": 0.5, "longest": 0.29, "across": 0.0, "along_longest": 0.29}   # straight outer vane edges
     assert fj.hidden_level(vane, 0.55, cfg) == "none"
 
+def test_hidden_along_needs_a_cover_edge_on_the_slide():
+    """A long straight run along the feather is 'hidden' only when the slide's edge goes on past
+    the feather (a board lying on it), not when it is the feather's own straight vane edge."""
+    import numpy as np
+    from src import feather_judge as fj
+
+    yy, xx = np.mgrid[0:600, 0:400]
+    feather = ((xx - 200 + 6 * np.sin(yy / 4.0)) / 60.0) ** 2 + ((yy - 300) / 180.0) ** 2 <= 1
+    feather[:, 210:] = False                                  # straight right side, x = 209
+    st = fj.straight_outline(feather)
+    assert st["along_longest"] >= 0.33 and st["along_runs"]
+    cfg = {"hidden": {"edge_check": True}}
+    board = np.full((600, 400), 200, np.uint8)               # light card ...
+    board[:, 210:] = 30                                      # ... and a dark board over the right side, top to bottom
+    vane = np.full((600, 400), 30, np.uint8)                 # the feather on the dark board, nothing on it
+    vane[feather] = 120
+    assert fj.hidden_level(dict(st), 1.0, cfg, board) == "part"
+    assert fj.hidden_level(dict(st), 1.0, cfg, vane) == "none"
+    assert fj.hidden_level(dict(st), 1.0, {"hidden": {}}, vane) == "part"     # check off: as before
+    on_border = feather[:, :210]                             # the feather runs off the scan
+    assert fj.hidden_level(fj.straight_outline(on_border), 1.0, cfg, vane[:, :210]) == "part"
+
+
 def test_model_only_holes_and_fragments_need_support():
     from src import feather_judge as fj
 
