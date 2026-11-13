@@ -351,7 +351,8 @@ def judge(client, slide_bgr, mask, crop_bgr, cfg: dict, rel_area: float | None =
 def demote_unsupported(rec: dict, cfg: dict, prefix: str = "judge_") -> None:
     """Model answers that hand verdicts showed to be noise unless something measured backs them
     (feather_judge.needs_support): 'holes or gaps' without a measured hole (fail_hole_frac) or a
-    split mask, and 'fragment' on a piece the clean-up did not mark small or narrow. They move
+    split mask, 'fragment' on a piece the clean-up did not mark small or narrow, and 'not a single
+    feather' without another feather inside, a fragment or a split mask. They move
     to the uncertain checks (listed, not failing) and the score is recomputed."""
     if rec.get(prefix + "status") != "ok":
         return
@@ -365,6 +366,14 @@ def demote_unsupported(rec: dict, cfg: dict, prefix: str = "judge_") -> None:
     if "fragment" in need and rec.get(prefix + "fragment") and "possible fragment" not in str(rec.get("postprocess") or ""):
         rec[prefix + "fragment"] = False
         moved.append("fragment")
+    if "single_feather" in need and rec.get(prefix + "single_feather") is False \
+            and not rec.get(prefix + "other_feather_inside") and not rec.get(prefix + "fragment") \
+            and (rec.get(prefix + "mask_parts") or 1) <= 1 and "possible fragment" not in str(rec.get("postprocess") or ""):
+        # 'not a single feather' with nothing else saying so (no other feather inside, not a
+        # fragment, one piece): in full-20261026 all 24 such answers were one whole feather, often
+        # with the note "ok" (A0596 im1167 A, AX86260 im0002 D)
+        rec[prefix + "single_feather"] = True
+        moved.append("single_feather")
     if moved:
         rec[prefix + "uncertain_checks"] = sorted(set(rec.get(prefix + "uncertain_checks") or []) | set(moved))
         bare = {k[len(prefix):]: v for k, v in rec.items() if k.startswith(prefix)}

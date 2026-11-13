@@ -130,6 +130,10 @@ def _rehide(run: str, x: dict) -> str:
             continue
         if i == "fragment" and "fragment" in need and "possible fragment" not in str(f.postprocess):
             continue
+        if i == "not a single feather" and "single_feather" in need and m["mask_parts"] <= 1 \
+                and "other feather inside" not in x["needs_review"] and "fragment" not in x["needs_review"] \
+                and "possible fragment" not in str(f.postprocess):
+            continue
         items.append(i)
     if level != "none":
         items.append(f"{'partly' if level == 'part' else 'mostly'} hidden")

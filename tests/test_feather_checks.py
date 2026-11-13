@@ -217,3 +217,21 @@ def test_model_only_holes_and_fragments_need_support():
               "postprocess": "possible fragment (small or narrow, not touching another feather)"}
     fj.demote_unsupported(backed, cfg)
     assert fj.failed_checks(backed) == ["holes or gaps", "fragment"]
+
+
+def test_not_a_single_feather_needs_support():
+    """'not a single feather' alone (the model's note even says ok) moves to the uncertain checks;
+    with another feather inside it still fails."""
+    from src import feather_judge as fj
+    cfg = {"needs_support": ["single_feather"]}
+    base = {"judge_status": "ok", "judge_single_feather": False, "judge_other_feather_inside": False,
+            "judge_fragment": False, "judge_mask_parts": 1, "judge_notes": "ok"}
+    alone = dict(base)
+    fj.demote_unsupported(alone, cfg)
+    assert alone["judge_single_feather"] is True and "single_feather" in alone["judge_uncertain_checks"]
+    two = {**base, "judge_other_feather_inside": True}
+    fj.demote_unsupported(two, cfg)
+    assert two["judge_single_feather"] is False and not two.get("judge_uncertain_checks")
+    split = {**base, "judge_mask_parts": 2}
+    fj.demote_unsupported(split, cfg)
+    assert split["judge_single_feather"] is False

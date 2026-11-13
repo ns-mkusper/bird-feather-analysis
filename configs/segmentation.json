@@ -143,9 +143,10 @@
     },
     "needs_support": [
       "holes_or_gaps",
-      "fragment"
+      "fragment",
+      "single_feather"
     ],
-    "_needs_support_comment": "Model answers that only count as failures when a measurement backs them (feather_judge.demote_unsupported): holes_or_gaps (a measured hole of fail_hole_frac or a split mask), fragment (the clean-up marked the piece small or narrow). Otherwise listed in review_uncertain. From 50 hand verdicts: model-only holes flagged 4 good feathers and 0 bad.",
+    "_needs_support_comment": "Model answers that only count as failures when a measurement backs them (feather_judge.demote_unsupported): holes_or_gaps (a measured hole of fail_hole_frac or a split mask), fragment (the clean-up marked the piece small or narrow), single_feather (another feather inside, a fragment or a split mask; full-20261026: all 24 unsupported answers were one whole feather). Otherwise listed in review_uncertain. From 50 hand verdicts: model-only holes flagged 4 good feathers and 0 bad.",
     "regrow": {
       "_comment": "Measured outline cut on the left/right: SAM 3 re-segments each feather on a contrast-enhanced crop with its box widened by widen_frac on both sides; if the new mask grows by min_growth or more of the old one's area on a side (middle 15-75% of the length), that side is marked cut. Catches a pale vane on the white card that the first pass and the model miss.",
       "enabled": true,
