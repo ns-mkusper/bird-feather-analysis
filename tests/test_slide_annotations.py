@@ -52,3 +52,14 @@ def test_feather_rows_show_the_slides_current_label_status():
                    "crop": "c.jpg", "bird_id_status": "readable"}]       # stale copy from ID assignment
     sa.annotate([r])
     assert lx.feather_table_rows(r, "run")[0]["bird_id_status"] == "partly_visible"
+
+
+def test_a_field_not_found_is_reported():
+    """A field the model did not find is reported (it may be under the board), unless inferred."""
+    a = _slide("BZ10382 2005-im2035.jpg", bird=("BZ10382H", "readable"), species=(None, "not_found"))
+    sa.annotate([a])
+    assert "species not found (covered or not printed)" in a.extra["label_problems"]
+    b = _slide("A0399 1996-im1148.jpg", bird=("A0399H", "readable"), species=(None, "not_found"))
+    c = _slide("A0399 1997-im1149.jpg", bird=("A0399H", "readable"))
+    sa.annotate([b, c])
+    assert b.extra["label_problems"] == "species inferred from the same bird"

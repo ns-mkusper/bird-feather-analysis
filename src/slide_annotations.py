@@ -24,7 +24,7 @@ INFER_FIELDS = ("sex", "species")
 UNINFORMATIVE = {None, "", "U"}          # sex 'U' (unknown) says nothing about the bird
 PROBLEM_WORDS = {"partly_visible": "partly visible", "needs_review": "needs review", "conflict": "conflicts with file name",
                  "filename_fallback": "from file name only", "model_error": "not read (model error)",
-                 "partial": "partial", "not_found": "not on the label"}
+                 "partial": "partial", "not_found": "not found (covered or not printed)"}
 
 
 def load_handwriting(path: str | Path | None) -> dict[str, dict]:
@@ -95,7 +95,10 @@ def annotate(results: list, all_names: list[str] | None = None, handwriting: dic
             r.extra.setdefault(k, "")
         problems = []
         for name, f in r.fields.items():
-            if f.status in PROBLEM_WORDS and f.status != "not_found":
+            # not_found is reported too: the model cannot tell a covered field from one that is not
+            # printed, and in full-20261026 every sampled species not_found was under the board
+            # (BZ10382 2005-im2035)
+            if f.status in PROBLEM_WORDS:
                 problems.append(f"{name} {PROBLEM_WORDS[f.status]}")
             elif f.status == "inferred":
                 problems.append(f"{name} inferred from the same bird")
