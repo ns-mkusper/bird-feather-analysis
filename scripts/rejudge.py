@@ -44,7 +44,7 @@ def judge_cfg(overrides: dict) -> dict:
 
 
 def rejudge(run: str, variant: str, overrides: dict, sample: Path | None, endpoint: str | None,
-            model: str | None, cleanup: bool = False) -> Path:
+            model: str | None, cleanup: bool = False, slides_dir: Path | None = None) -> Path:
     seg = REPO / "data/sample_runs" / run
     fdf = pd.read_csv(REPO / "data/label_runs" / run / "feathers.csv")
     fdf = fdf[(fdf.segment_status == "segmented") & fdf.mask_image.notna()]
@@ -79,7 +79,7 @@ def rejudge(run: str, variant: str, overrides: dict, sample: Path | None, endpoi
                 continue
             if f.file_id not in slides:
                 slides.clear()
-                slides[f.file_id] = cv2.imread(str(REPO / "data/raw_cache" / f.file_id))
+                slides[f.file_id] = cv2.imread(str((slides_dir or REPO / "data/raw_cache") / f.file_id))
             img = slides[f.file_id]
             full = cv2.imread(str(seg / f.mask_image), 0) > 0
             before = make_feather(img, full, trim, 0)
@@ -219,6 +219,7 @@ def main() -> int:
     ap.add_argument("--model")
     ap.add_argument("--compare", action="store_true")
     ap.add_argument("--cleanup", action="store_true", help="remove glue/card first (crop.cleanup)")
+    ap.add_argument("--slides", help="folder with the slide images (default data/raw_cache)")
     ap.add_argument("--verdicts", help="verdicts CSV (default: data/review/verdicts_<run>.csv)")
     ap.add_argument("--via", help="with --compare: a run with the verdicts' crops and saved masks, to link them to this run")
     args = ap.parse_args()
@@ -227,7 +228,7 @@ def main() -> int:
         print(compare(args.run, verdicts, args.via).to_string())
         return 0
     rejudge(args.run, args.variant, json.loads(args.set), Path(args.sample) if args.sample else None,
-            args.endpoint, args.model, args.cleanup)
+            args.endpoint, args.model, args.cleanup, Path(args.slides) if args.slides else None)
     return 0
 
 
