@@ -141,6 +141,16 @@
       "edge_step": 40,
       "edge_frac": 0.25
     },
+    "board_cut": {
+      "_comment": "A left/right cut answered by the model alone (regrow below min_growth) on a side lying on the black board (side_board_share >= min_board: share of the slide in a band band_px outside the outline darker than `dark`) moves to review_uncertain: on the board regrow sees missing vane, while the model reads loose barbs or fringe as a cut (full-20261026: ~28 such flags, e.g. A0517 im1165 D). On the card the model's answer stands (BB17692 im0513 D, a hand-checked cut, board share 0.61; every bad feather checked was below 0.9).",
+      "enabled": true,
+      "min_board": 0.9,
+      "band_px": [
+        8,
+        60
+      ],
+      "dark": 90
+    },
     "needs_support": [
       "holes_or_gaps",
       "fragment",

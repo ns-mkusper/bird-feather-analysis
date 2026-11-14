@@ -627,6 +627,8 @@ class FeatherProcessor:
                         g = feather_repair.regrow_check(self._interactive(), img, feather["raw_mask"], others, gcfg)
                         rec.update({"judge_" + k: v for k, v in g.items() if k != "regrow_cut"})
                         feather_judge.add_cut_sides(rec, g.get("regrow_cut") or [], jcfg)
+                        jmask = feather["mask"] if jcfg.get("judge_mask", "full") == "saved" else feather["full_mask"]
+                        feather_judge.demote_board_cuts(rec, img, jmask, jcfg)
                     if rcfg.get("enabled") and repairs_left > 0 and feather_repair.worth_repairing(rec):
                         # second sweep: new masks for a fixable failure, kept only if they check better
                         repairs_left -= 1

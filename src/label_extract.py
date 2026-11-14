@@ -858,7 +858,7 @@ FEATHER_TABLE_COLS = [
     "judge_status", "judge_score", "judge_segment_ok", "judge_sides_cut", "judge_outline_left",
     "judge_outline_right", "judge_outline_top", "judge_outline_bottom", "judge_holes_or_gaps", "judge_holes",
     "judge_hole_frac", "judge_mask_parts", "judge_single_feather", "judge_fragment", "judge_other_feather_inside",
-    "judge_other_material_inside", "judge_glue_inside", "judge_hidden", "judge_straight_outline", "judge_straight_longest", "judge_straight_across", "judge_straight_along", "judge_straight_cover_edge", "judge_regrow_left", "judge_regrow_right", "judge_model_score", "judge_notes", "judge_error",
+    "judge_other_material_inside", "judge_glue_inside", "judge_hidden", "judge_straight_outline", "judge_straight_longest", "judge_straight_across", "judge_straight_along", "judge_straight_cover_edge", "judge_regrow_left", "judge_regrow_right", "judge_board_left", "judge_board_right", "judge_model_score", "judge_notes", "judge_error",
     "review_uncertain", "judge_uncertain_checks", "repair", "repair_tried",
     # missed feathers (src/feather_inventory.py): slide-level result repeated per row
     "missed_x", "missed_between", "missed_partly_hidden", "inventory_status", "inventory_total",

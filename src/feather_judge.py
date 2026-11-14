@@ -393,6 +393,52 @@ def add_cut_sides(rec: dict, sides: list[str], cfg: dict, prefix: str = "judge_"
     rec[prefix + "segment_ok"] = not failed_checks(bare, prefix="")
 
 
+def side_board_share(slide_bgr: np.ndarray, mask: np.ndarray, side: str, cfg: dict) -> float:
+    """Share of the slide just outside the `side` ('left'/'right') of the mask that is dark board:
+    a band `band_px` [inner, outer] px from the outline, between the feather's top and bottom."""
+    m = mask.astype(np.uint8)
+    inner, outer = (int(v) for v in cfg.get("band_px", (8, 60)))
+    ring = cv2.dilate(m, np.ones((2 * outer + 1,) * 2, np.uint8)).astype(bool) \
+        & ~cv2.dilate(m, np.ones((2 * inner + 1,) * 2, np.uint8)).astype(bool)
+    ys, xs = np.nonzero(m)
+    if not len(xs):
+        return 0.0
+    xc = (xs.min() + xs.max()) / 2
+    cols = np.arange(m.shape[1])[None, :]
+    rows = np.arange(m.shape[0])[:, None]
+    sel = ring & ((cols < xc) if side == "left" else (cols > xc)) & (rows >= ys.min()) & (rows <= ys.max())
+    gray = cv2.GaussianBlur(cv2.cvtColor(slide_bgr, cv2.COLOR_BGR2GRAY), (9, 9), 0)[sel]
+    return round(float(np.mean(gray < int(cfg.get("dark", 90)))), 3) if gray.size else 0.0
+
+
+def demote_board_cuts(rec: dict, slide_bgr: np.ndarray, mask: np.ndarray, cfg: dict, prefix: str = "judge_") -> None:
+    """A left/right 'cut' from the model alone (the measured regrow below its min_growth) on a side
+    that lies on the black board (side_board_share >= min_board) moves to the uncertain checks:
+    on the board the regrow measure sees a missing piece of vane, while the model reads loose
+    single barbs or fringe beyond the line as a cut (A0517 im1165 D). On the white card the
+    model's answer stands: pale vane there fools the measure (BB17692 im0513 D, hand-checked)."""
+    b = cfg.get("board_cut") or {}
+    g = cfg.get("regrow") or {}
+    if not b.get("enabled") or rec.get(prefix + "status") != "ok":
+        return
+    moved = []
+    for side in ("left", "right"):
+        growth = rec.get(f"{prefix}regrow_{side}")
+        if rec.get(f"{prefix}outline_{side}") != "cut" or growth is None or growth >= float(g.get("min_growth", 0.15)):
+            continue
+        share = side_board_share(slide_bgr, mask, side, b)
+        rec[f"{prefix}board_{side}"] = share
+        if share >= float(b.get("min_board", 0.9)):
+            rec[f"{prefix}outline_{side}"] = "complete"
+            moved.append(f"outline_{side}")
+    if moved:
+        rec[prefix + "sides_cut"] = [s for s in SIDES if rec.get(f"{prefix}outline_{s}") == "cut"]
+        rec[prefix + "uncertain_checks"] = sorted(set(rec.get(prefix + "uncertain_checks") or []) | set(moved))
+        bare = {k[len(prefix):]: v for k, v in rec.items() if k.startswith(prefix)}
+        rec[prefix + "score"] = derive_score(bare, cfg.get("score"))
+        rec[prefix + "segment_ok"] = not failed_checks(bare, prefix="")
+
+
 def failed_checks(rec: dict, prefix: str = "judge_") -> list[str]:
     """The checks one feather failed (model answer plus mask measurements);
     keys are judge_* in a feather record, bare in a judge result (prefix='')."""

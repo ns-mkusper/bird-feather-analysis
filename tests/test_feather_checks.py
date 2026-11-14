@@ -235,3 +235,27 @@ def test_not_a_single_feather_needs_support():
     split = {**base, "judge_mask_parts": 2}
     fj.demote_unsupported(split, cfg)
     assert split["judge_single_feather"] is False
+
+
+def test_model_only_cut_on_the_board_needs_the_regrow_measure():
+    """On the black board a model-only cut (regrow below min_growth) moves to the uncertain checks;
+    on the white card, or with the regrow measure behind it, the cut stays."""
+    import numpy as np
+    from src import feather_judge as fj
+    mask = np.zeros((400, 300), bool)
+    mask[50:350, 100:200] = True
+    board = np.full((400, 300, 3), 30, np.uint8)
+    card = np.full((400, 300, 3), 210, np.uint8)
+    cfg = {"board_cut": {"enabled": True}, "regrow": {"min_growth": 0.15}}
+    base = {"judge_status": "ok", "judge_outline_left": "cut", "judge_outline_right": "complete",
+            "judge_outline_top": "complete", "judge_outline_bottom": "complete", "judge_sides_cut": ["left"],
+            "judge_regrow_left": 0.01, "judge_regrow_right": 0.0}
+    on_board = dict(base)
+    fj.demote_board_cuts(on_board, board, mask, cfg)
+    assert on_board["judge_outline_left"] == "complete" and "outline_left" in on_board["judge_uncertain_checks"]
+    on_card = dict(base)
+    fj.demote_board_cuts(on_card, card, mask, cfg)
+    assert on_card["judge_outline_left"] == "cut"
+    measured = {**base, "judge_regrow_left": 0.3}
+    fj.demote_board_cuts(measured, board, mask, cfg)
+    assert measured["judge_outline_left"] == "cut"
