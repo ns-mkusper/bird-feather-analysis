@@ -81,7 +81,7 @@
         1.0,
         0.18
       ],
-      "prompt": "This crop shows a single letter for the bird's sex in a grey box at the top-right of a specimen label (usually M or F). Return only that letter.",
+      "prompt": "This crop shows a single letter for the bird's sex in a grey box at the top-right of a specimen label (usually M or F). Capital letters mean certain, small letters (m, f) mean supposed: return the letter exactly as printed, keeping its case.",
       "pattern": "^[MFU]$",
       "normalize": "remove_spaces_upper",
       "fallback_regions": [
@@ -121,6 +121,26 @@
       ],
       "verify": true,
       "partial": "review"
+    },
+    "field_age": {
+      "region": [
+        0.5,
+        0.06,
+        0.85,
+        0.18
+      ],
+      "prompt": "This crop shows a row of a specimen label with a 5-letter species code (e.g. HAFLU) on the left and a short age code on the right, like '4K+', '2K' or '1K' (sometimes with a sex symbol before it). Return ONLY the age code on the right, not the species code.",
+      "pattern": "^\\d{1,2}K\\+?$",
+      "normalize": "remove_spaces_upper",
+      "fallback_regions": [
+        [
+          0.4,
+          0.03,
+          0.95,
+          0.25
+        ]
+      ],
+      "verify": false
     }
   },
   "answer_rules": "Answer with JSON only: {\"value\": <text or null>, \"visible\": \"yes\" | \"partly\" | \"no\", \"confidence\": <0-1>}. Use visible=no and value=null ONLY if that text is truly absent or fully covered in the crop; never guess characters you cannot see. Use only plain Latin letters, digits and normal punctuation in value; never escape sequences.",
@@ -149,5 +169,60 @@
     ],
     "max_tokens": 120,
     "prompt": "This is part of a printed specimen label on a scanned feather slide. Is any text in it handwritten (written by hand with a pen or marker, including handwritten corrections, crossed-out printed text, or added notes), rather than printed? Reply with only JSON: {\"handwritten\": true|false, \"fields\": [which parts: bird_id, species, age, sex, date, note], \"notes\": \"<at most 15 words: what is handwritten, or ok>\"}"
+  },
+  "card": {
+    "_comment": "What the feather cards mean, from the collector's notes on the feather samples (2026-10-30); used by src/card_rules.py. species_codes: the codes in use (a misread one or two letters off exactly one of them becomes that code). age_box_codes: text in the age box that is not an age. age_colours: the age box colour code from the notes; yellow (6K), red (7K) and bright red (8K) are left out on purpose, the model mixes them up with the orange 1K box. filename_confirms_partial_ids: a partly visible bird ID or year that agrees with the file name is trusted for the feather IDs (confirmed_by_filename); false = only a fully readable value is trusted. age_colours_shared_with_codes: box colours the RC / ÅF boxes share (purple), which give an age only with a digit in sight. age_box: one extra question per slide on the age box (colour and state), asked only when the age itself is not readable.",
+    "species_codes": [
+      "HAFLU",
+      "SVFLU",
+      "HFXSF",
+      "SFXHF"
+    ],
+    "age_box_codes": {
+      "RC": "RC: ringed by someone else, the secured age is held by the ringing centre (not on the card)",
+      "ÅF": "ÅF: recovery, the secured age is not on the card",
+      "AF": "ÅF: recovery, the secured age is not on the card"
+    },
+    "age_colours": {
+      "grey": "1K",
+      "gray": "1K",
+      "orange": "1K",
+      "yellowish": "1K",
+      "lilac": "2K",
+      "purple": "2K",
+      "violet": "2K",
+      "dark blue": "3K",
+      "navy": "3K",
+      "light blue": "4K",
+      "cyan": "4K",
+      "turquoise": "4K",
+      "green": "5K"
+    },
+    "filename_confirms_partial_ids": true,
+    "age_box": {
+      "enabled": true,
+      "region": [
+        0.0,
+        0.0,
+        0.3,
+        0.17
+      ],
+      "max_tokens": 80,
+      "prompt": "This crop shows the coloured square at the top-left of a printed specimen label. It normally holds an age code such as '3K' or '2K+' in white on a coloured background; some squares hold letters such as 'RC' or 'ÅF' instead, some are empty, and a black card may cover part or all of it. Reply with only JSON: {\"text\": \"<the text in the square, or null if none is readable>\", \"colour\": \"<background colour: grey, orange, purple, dark blue, light blue, green, yellow, red, pink, white or black>\", \"state\": \"printed\" | \"code\" | \"empty\" | \"covered\" | \"partly\"} where printed = an age code is fully readable, code = letters that are not an age, empty = no text on a white square, covered = the square is hidden, partly = part of it is hidden."
+    },
+    "second_look": {
+      "fields": [
+        "species",
+        "sex",
+        "age"
+      ],
+      "crop_max_side": 1600,
+      "_comment": "Second look (label_extract.second_look): a field left partly visible or needing review is read once more on the expanded crop at a higher resolution; it becomes readable only when that answer is readable and gives the same value (or, with no value before, a known species code). Disagreements stay for review."
+    },
+    "age_colours_shared_with_codes": [
+      "lilac",
+      "purple",
+      "violet"
+    ]
   }
 }

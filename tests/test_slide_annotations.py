@@ -19,7 +19,7 @@ def test_sex_and_species_inferred_from_the_same_birds_confident_slides():
     sa.annotate([a, b, c], ["BZ11933 2007-im2197.jpg", "BZ11933 2007-im2198.jpg", "BZ11933 2008-im2300.jpg"])
     assert (a.fields["sex"].value, a.fields["sex"].status, a.fields["sex"].source) == ("M", "inferred", "same_bird")
     assert a.fields["species"].status == "inferred" and "this slide: 'HA' [partly_visible]" in a.fields["species"].note
-    assert "sex inferred from the same bird" in a.extra["label_problems"]
+    assert "sex inferred from the same bird" in a.extra["label_info"] and not a.extra["label_problems"]
     assert a.extra["photos_same_year"] == 2 and a.extra["multiple_photos_same_year"] is True
     assert c.extra["photos_same_year"] == 1 and c.extra["multiple_photos_same_year"] is False
 
@@ -55,11 +55,13 @@ def test_feather_rows_show_the_slides_current_label_status():
 
 
 def test_a_field_not_found_is_reported():
-    """A field the model did not find is reported (it may be under the board), unless inferred."""
+    """A field the model did not find is reported (it may be under the board), unless inferred: as
+    information, since nobody can read a covered field from the image either."""
     a = _slide("BZ10382 2005-im2035.jpg", bird=("BZ10382H", "readable"), species=(None, "not_found"))
     sa.annotate([a])
-    assert "species not found (covered or not printed)" in a.extra["label_problems"]
+    assert "species not found (covered or not printed)" in a.extra["label_info"]
+    assert "species" not in a.extra["label_problems"]
     b = _slide("A0399 1996-im1148.jpg", bird=("A0399H", "readable"), species=(None, "not_found"))
     c = _slide("A0399 1997-im1149.jpg", bird=("A0399H", "readable"))
     sa.annotate([b, c])
-    assert b.extra["label_problems"] == "species inferred from the same bird"
+    assert b.extra["label_info"] == "species inferred from the same bird" and b.extra["label_problems"] == ""

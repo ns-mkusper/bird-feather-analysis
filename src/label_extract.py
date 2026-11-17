@@ -70,10 +70,13 @@ from threading import Lock
 from dotenv import load_dotenv
 from PIL import Image
 
+from src import card_rules
+
 REPO = Path(__file__).resolve().parent.parent
 load_dotenv(REPO / ".env", override=False)  # FEATHER_VLM_ENDPOINTS etc.
 DEFAULT_CONFIG = REPO / "configs" / "label_fields.json"
-FIELDS_ORDER = ["bird_id", "species", "age", "sex", "date"]
+# field_age: the collector's ageing from the plumage, right end of the species row (src/card_rules.py)
+FIELDS_ORDER = ["bird_id", "species", "age", "field_age", "sex", "date"]
 DATE_PARTS = ["year", "month", "day"]
 EXPORT_ORDER = ["bird_id", "species", "age", "sex", *DATE_PARTS]
 EXTRACTOR_VERSION = "label_extract/3"
@@ -87,6 +90,7 @@ READABLE = "readable"
 REVIEW_STATUSES = {"partial", "needs_review", "partly_visible", "conflict", "filename_fallback", "model_error"}
 # label fields the feather IDs are built from: a feather whose slide has one of these untrusted is not usable
 ID_FIELDS = ("bird_id", "date")
+TRUSTED_ID_STATUSES = card_rules.TRUSTED_ID_STATUSES  # readable, or partly visible agreeing with the file name
 NA = "N/A"
 
 
@@ -183,9 +187,11 @@ class LabelResult:
         out["feather_count"] = len(seg) if self.feathers else None
         out["feather_ids"] = ";".join(f["feather_id"] for f in seg if f.get("feather_id"))
         out["possible_missed"] = sum(f.get("segment_status") == "possible_missed" for f in self.feathers)
-        for k in ("label_problems", "label_note", "photos_same_year", "multiple_photos_same_year", "handwritten",
-                  "handwritten_fields", "handwritten_model"):
+        for k in ("label_problems", "label_info", "sex_certainty", "label_note", "photos_same_year",
+                  "multiple_photos_same_year", "handwritten", "handwritten_fields", "handwritten_model"):
             out[k] = self.extra.get(k)
+        box = self.extra.get("age_box") or {}
+        out["age_box_colour"], out["age_box_state"] = box.get("colour"), box.get("state")
         return out
 
     def id_parts(self) -> dict:
@@ -703,6 +709,30 @@ def check_handwriting(client, image: Image.Image, hcfg: dict, cfg: dict) -> dict
             "handwriting_source": "model"}
 
 
+def check_age_box(client, image: Image.Image, bcfg: dict, cfg: dict) -> dict:
+    """Asks for the age box's text, colour and state (card.age_box): the colour is the age code
+    on the cards, so it gives the age where the digits are covered (src/card_rules.py).
+    Returns {} when the request fails or the answer does not parse."""
+    crop = crop_field(image, bcfg["region"], cfg["vlm"].get("crop_max_side", 1024))
+    try:
+        text = client.ask(crop, bcfg["prompt"], max_tokens=int(bcfg.get("max_tokens", 80)))
+        m = re.search(r"\{.*\}", text or "", re.S)
+        d = json.loads(m.group(0)) if m else None
+    except Exception:  # noqa: BLE001
+        return {}
+    if not isinstance(d, dict):
+        return {}
+    return {"text": (str(d["text"]).strip() if d.get("text") not in (None, "", "null") else None),
+            "colour": str(d.get("colour") or "").strip().lower() or None,
+            "state": str(d.get("state") or "").strip().lower() or None}
+
+
+def needs_age_box(r: "LabelResult", cfg: dict) -> bool:
+    bcfg = (cfg.get("card") or {}).get("age_box") or {}
+    f = r.fields.get("age")
+    return bool(bcfg.get("enabled")) and f is not None and f.status not in (READABLE, "model_error")
+
+
 def extract(image_path: str | Path, cfg: dict | None = None, client: VLMClient | None = None,
             fields: list[str] | None = None, evidence_dir: str | Path | None = None) -> LabelResult:
     cfg = cfg or load_config()
@@ -720,6 +750,9 @@ def extract(image_path: str | Path, cfg: dict | None = None, client: VLMClient |
     apply_filename(result, cfg)
     if (cfg.get("handwriting") or {}).get("enabled") and fields is None:
         result.extra.update(check_handwriting(client, image, cfg["handwriting"], cfg))
+    if needs_age_box(result, cfg):
+        result.extra["age_box"] = check_age_box(client, image, cfg["card"]["age_box"], cfg)
+    card_rules.apply(result, cfg)
     result.seconds = time.monotonic() - t0
     result.model = getattr(client, "model_name", "")
     result.node = socket.gethostname()
@@ -738,6 +771,53 @@ def failed_result(image_path: str | Path, exc: BaseException, fields: list[str] 
     return r
 
 
+def second_look(r: "LabelResult", name: str, client, image: Image.Image, cfg: dict) -> bool:
+    """card.second_look: one more reading of a field left partly visible or needing review, on
+    the expanded crop at a higher resolution. The field becomes readable only when that answer is
+    readable and agrees with the first value (with no first value: a known species code). True
+    when the field changed."""
+    look = (cfg.get("card") or {}).get("second_look") or {}
+    f = r.fields.get(name)
+    spec = cfg["fields"].get(name)
+    if name not in look.get("fields", []) or f is None or spec is None \
+            or f.status not in ("partly_visible", "needs_review"):
+        return False
+    region = dict(crop_plan(spec, cfg))["expanded"]
+    zoom = {**cfg, "vlm": {**cfg["vlm"], "crop_max_side": int(look.get("crop_max_side", 1600))}}
+    a = _attempt(client, image, "second_look", region, spec, zoom, None, name)
+    f.attempts.append(a)
+    if a.error:
+        return False
+    st, _ = _classify(a, spec, cfg)
+    known = (cfg.get("card") or {}).get("species_codes") or []
+    agrees = a.value == f.value if f.value else (name == "species" and a.value in known)
+    if st != READABLE or not agrees:
+        f.note = (f.note + "; " if f.note else "") + f"second look: {a.value!r} ({a.visible}), not accepted"
+        return False
+    f.note = (f.note + "; " if f.note else "") + f"second look at higher resolution agreed ({a.value})"
+    f.value, f.status, f.source, f.confidence = a.value, READABLE, "second_look", a.confidence
+    return True
+
+
+def complete_reading(r: "LabelResult", image_path: str | Path, client, cfg: dict,
+                     evidence_dir: Path | None = None, new_fields: bool = True) -> bool:
+    """Adds what a cached reading from older code lacks (fields added to the config since, unless
+    new_fields is False; the age box question) without reading the rest again. True when
+    something was added."""
+    missing = [n for n in FIELDS_ORDER if n not in r.fields and cfg["fields"].get(n)] if new_fields else []
+    box = needs_age_box(r, cfg) and "age_box" not in r.extra
+    if not (missing or box) or client is None:
+        return False
+    image = Image.open(image_path)
+    image.load()
+    ev = Path(evidence_dir) / Path(image_path).stem if evidence_dir else None
+    for name in missing:
+        r.fields[name] = read_field(client, image, name, cfg["fields"][name], cfg, ev)
+    if box:
+        r.extra["age_box"] = check_age_box(client, image, cfg["card"]["age_box"], cfg)
+    return True
+
+
 def extract_for_pipeline(image_path: str | Path, output_dir: str | Path, client,
                          cfg: dict | None = None) -> LabelResult:
     """Pipeline entry point (workers): one result per slide and output dir,
@@ -751,7 +831,11 @@ def extract_for_pipeline(image_path: str | Path, output_dir: str | Path, client,
             d = json.loads(cache.read_text())
             r = LabelResult.from_json(d)
             if d.get("extractor") == EXTRACTOR_VERSION and not r.has_model_error:
-                reclassify(r, cfg or load_config())       # cached under older rules: re-derive statuses
+                cfg = cfg or load_config()
+                reclassify(r, cfg)       # cached under older rules: re-derive statuses
+                if complete_reading(r, image_path, client, cfg, label_dir / "evidence"):
+                    save_pipeline_result(r, output_dir)
+                card_rules.apply(r, cfg)
                 return r
         except (ValueError, TypeError, KeyError):
             pass
@@ -835,6 +919,7 @@ CREATE TABLE IF NOT EXISTS specimen_labels (
     bird_id TEXT, bird_id_status TEXT, bird_id_source TEXT,
     species TEXT, species_status TEXT, species_source TEXT,
     age TEXT, age_status TEXT, age_source TEXT,
+    field_age TEXT, field_age_status TEXT, field_age_source TEXT,
     sex TEXT, sex_status TEXT, sex_source TEXT,
     year TEXT, month TEXT, day TEXT, date_status TEXT, date_source TEXT,
     feather_count INTEGER, feather_ids TEXT,
@@ -848,10 +933,10 @@ CREATE TABLE IF NOT EXISTS specimen_labels (
 # slide's label fields, the segmentation measurements and the VLM judge.
 FEATHER_TABLE_COLS = [
     "run_id", "node_id", "file_id", "feather_id", "seq", "segment_status", "usable", "excluded_because",
-    "duplicate_of", "needs_review", "label_needs_review", "label_problems", "label_note", "photos_same_year",
+    "duplicate_of", "needs_review", "label_needs_review", "label_problems", "label_info", "label_note", "photos_same_year",
     "multiple_photos_same_year", "handwritten", "handwritten_fields",
     "bird_id", "bird_id_status", "bird_id_source", "species", "species_status", "age", "age_status",
-    "sex", "sex_status", "year", "month", "day", "date_status", "year_source", "period",
+    "field_age", "sex", "sex_status", "sex_certainty", "year", "month", "day", "date_status", "year_source", "period",
     "crop", "qc_image", "mask_image", "bbox", "area_px", "length_px", "width_px", "angle_deg", "touches_border",
     "sam_score", "sam_masks", "postprocess", "mask_cleanup",
     # per-feather checks (src/feather_judge.py): score is derived from the checks
@@ -897,14 +982,14 @@ def feather_table_rows(r: "LabelResult", run_id: str = "", node_id: str = "") ->
         row = {c: None for c in FEATHER_TABLE_COLS}
         row.update({"run_id": run_id, "node_id": node_id or r.node, "file_id": r.file_id,
                     "label_needs_review": slide.get("needs_review")})
-        for c in ("species", "species_status", "age", "age_status", "sex", "sex_status",
-                  "year", "month", "day", "date_status"):
+        for c in ("species", "species_status", "age", "age_status", "field_age", "sex", "sex_status",
+                  "sex_certainty", "year", "month", "day", "date_status"):
             row[c] = slide.get(c)
         row["bird_id"] = f.get("bird_id") or parts.get("bird_id") or slide.get("bird_id")
         row["bird_id_status"] = slide.get("bird_id_status")
         row["bird_id_source"] = f.get("bird_id_source") or parts.get("bird_id_source")
-        slide_cols = {"species", "species_status", "age", "age_status", "sex", "sex_status", "year", "month",
-                      "day", "date_status", "bird_id", "bird_id_status"}
+        slide_cols = {"species", "species_status", "age", "age_status", "field_age", "sex", "sex_status",
+                      "sex_certainty", "year", "month", "day", "date_status", "bird_id", "bird_id_status"}
         for c in FEATHER_TABLE_COLS:
             # label columns come from the slide's current reading, never from the copy a feather
             # record kept when its ID was assigned (statuses can be re-derived later: reclassify)
@@ -913,11 +998,12 @@ def feather_table_rows(r: "LabelResult", run_id: str = "", node_id: str = "") ->
                 row[c] = json.dumps(v) if isinstance(v, (list, dict)) else v
         ok, why = usable(f)
         if ok:   # the feather ID rests on the slide's bird ID and date: both must be read with confidence
-            untrusted = [n for n in ID_FIELDS if (fr := r.fields.get(n)) is not None and fr.status not in (READABLE,)]
+            untrusted = [n for n in ID_FIELDS if (fr := r.fields.get(n)) is not None
+                         and fr.status not in TRUSTED_ID_STATUSES]
             if untrusted:
                 ok, why = False, "label: " + ", ".join(f"{n} {r.fields[n].status.replace('_', ' ')}" for n in untrusted)
-        for k in ("label_problems", "label_note", "photos_same_year", "multiple_photos_same_year", "handwritten",
-                  "handwritten_fields"):
+        for k in ("label_problems", "label_info", "label_note", "photos_same_year", "multiple_photos_same_year",
+                  "handwritten", "handwritten_fields"):
             row[k] = r.extra.get(k)
         row["usable"], row["excluded_because"] = ("yes" if ok else "no"), why
         rows.append(row)
@@ -1035,7 +1121,7 @@ def score_against_gold(results: list[LabelResult], gold_csv: str | Path,
             if want.upper() == NA:
                 # Truly absent on the slide: not_found is right, and so is a
                 # labelled file-name fallback (it never claims to be read).
-                ok = f.status in ("not_found", "filename_fallback")
+                ok = f.status in ("not_found", "filename_fallback", "not_on_card", card_rules.CODE_ON_CARD)
                 want_norm = NA
             else:
                 want_norm = normalize(want, cfg["fields"][name].get("normalize"))
@@ -1286,7 +1372,7 @@ def slide_problems(r: LabelResult, gold_row: dict | None, cfg: dict) -> list[dic
         want = (gold_row or {}).get(name, "").strip()
         if want:
             if want.upper() == NA:
-                if f.status not in ("not_found", "filename_fallback", "model_error"):
+                if f.status not in ("not_found", "filename_fallback", "model_error", "not_on_card", card_rules.CODE_ON_CARD):
                     kind = "wrong" if f.status == READABLE else "flagged_wrong"
                     out.append({"field": name, "kind": kind, "got": f.value, "want": NA, "status": f.status,
                                 "note": f.note})
@@ -1352,6 +1438,7 @@ def finish_run(out: Path, chosen: list[str], cfg: dict, gold: str | Path | None 
 
     for r in results:
         reclassify(r, cfg)            # the current reading rules, without asking the model again
+        card_rules.apply(r, cfg)      # what the cards mean (src/card_rules.py)
     slide_annotations.annotate(results, siblings, slide_annotations.load_handwriting(handwriting))
     if segmentation_dir and Path(segmentation_dir).exists():
         attach_feathers_from_crops(results, segmentation_dir, siblings)
