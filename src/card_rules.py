@@ -43,6 +43,8 @@ CODE_ON_CARD = "code_on_card"
 FROM_COLOUR = "from_colour"
 TRUSTED_ID_STATUSES = (READABLE, CONFIRMED)
 TARSUS_LETTERS = "HRVL"
+# fields read for information only: an unreadable one never puts a slide up for review
+EXTRA_FIELDS = ("field_age",)
 
 
 def edit_distance(a: str, b: str) -> int:

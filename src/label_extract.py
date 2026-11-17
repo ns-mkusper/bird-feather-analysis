@@ -77,6 +77,7 @@ load_dotenv(REPO / ".env", override=False)  # FEATHER_VLM_ENDPOINTS etc.
 DEFAULT_CONFIG = REPO / "configs" / "label_fields.json"
 # field_age: the collector's ageing from the plumage, right end of the species row (src/card_rules.py)
 FIELDS_ORDER = ["bird_id", "species", "age", "field_age", "sex", "date"]
+EXTRA_FIELDS = card_rules.EXTRA_FIELDS     # read for information only
 DATE_PARTS = ["year", "month", "day"]
 EXPORT_ORDER = ["bird_id", "species", "age", "sex", *DATE_PARTS]
 EXTRACTOR_VERSION = "label_extract/3"
@@ -142,7 +143,7 @@ class LabelResult:
 
     @property
     def needs_review(self) -> bool:
-        return any(f.status in REVIEW_STATUSES for f in self.fields.values())
+        return any(f.status in REVIEW_STATUSES for n, f in self.fields.items() if n not in EXTRA_FIELDS)
 
     @property
     def has_model_error(self) -> bool:

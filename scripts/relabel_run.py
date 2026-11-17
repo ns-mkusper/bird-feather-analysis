@@ -60,7 +60,8 @@ def main() -> int:
             card_rules.apply(r, cfg)
         slide_annotations.annotate(list(trial.values()), list(trial))
         has_age = (lx.READABLE, card_rules.FROM_COLOUR, "inferred")
-        todo = [r for k, r in results.items() if "field_age" not in r.fields and not r.has_model_error
+        todo = [r for k, r in results.items() if not r.has_model_error
+                and ("field_age" not in r.fields or r.fields["field_age"].status != lx.READABLE)
                 and (trial[k].fields.get("age") is None or trial[k].fields["age"].status not in has_age)]
         print(f"--field-age-without-box-age: {len(todo)} slides")
         client = lx.VLMClient(cfg["vlm"])

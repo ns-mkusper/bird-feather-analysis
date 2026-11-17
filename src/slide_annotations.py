@@ -42,6 +42,7 @@ INFO_WORDS = {"not_found": "not found (covered or not printed)", "inferred": "in
               card_rules.CODE_ON_CARD: "not on the card (code in the box)", card_rules.FROM_COLOUR: "from the box colour",
               "not_on_card": "not on the card (empty box)"}
 TRUSTED_ID = (card_rules.READABLE, card_rules.CONFIRMED)
+EXTRA_FIELDS = card_rules.EXTRA_FIELDS
 EXACT_AGE = re.compile(r"^(\d{1,2})K$")
 CORRECTION = re.compile(r"cross(ed)?[- ]out|correct|overwrit|written over|struck|replaced by hand|changed by hand", re.I)
 
@@ -129,7 +130,10 @@ def annotate(results: list, all_names: list[str] | None = None, handwriting: dic
             # not_found is still reported (label_info): the model cannot tell a covered field from one
             # that is not printed, and in full-20261026 every sampled species not_found was under the
             # board (BZ10382 2005-im2035)
-            if f.status in PROBLEM_WORDS:
+            if name in EXTRA_FIELDS:            # information only (label_extract.EXTRA_FIELDS)
+                if f.status != readable:
+                    facts.append(f"{name} {PROBLEM_WORDS.get(f.status) or INFO_WORDS.get(f.status) or f.status}")
+            elif f.status in PROBLEM_WORDS:
                 problems.append(f"{name} {PROBLEM_WORDS[f.status]}")
             elif f.status in INFO_WORDS:
                 facts.append(f"{name} {INFO_WORDS[f.status]}")

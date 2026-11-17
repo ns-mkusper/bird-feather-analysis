@@ -214,3 +214,10 @@ def test_a_hand_correction_is_a_problem_and_other_notes_are_information():
     sa.annotate([r, note])
     assert "crossed out by hand" in r.extra["label_problems"]
     assert "VANO" in note.extra["label_info"] and not note.extra["label_problems"]
+
+
+def test_an_unreadable_field_age_is_information_only():
+    r = _slide("AS93827 1990-img0153.jpg", field_age=("M", "needs_review"))
+    sa.annotate([r])
+    assert not r.needs_review and not r.extra["label_problems"]
+    assert "field_age needs review" in r.extra["label_info"]
