@@ -43,6 +43,7 @@ INFO_WORDS = {"not_found": "not found (covered or not printed)", "inferred": "in
               "not_on_card": "not on the card (empty box)"}
 TRUSTED_ID = (card_rules.READABLE, card_rules.CONFIRMED)
 EXACT_AGE = re.compile(r"^(\d{1,2})K$")
+CORRECTION = re.compile(r"cross(ed)?[- ]out|correct|overwrit|written over|struck|replaced by hand|changed by hand", re.I)
 
 
 def load_handwriting(path: str | Path | None) -> dict[str, dict]:
@@ -141,7 +142,8 @@ def annotate(results: list, all_names: list[str] | None = None, handwriting: dic
         problems += notes.get(r.file_id, [])
         facts += info.get(r.file_id, [])
         if r.extra["label_note"]:
-            facts.append(r.extra["label_note"])
+            # a value corrected, crossed out or written over by hand needs a look; other notes are information
+            (problems if CORRECTION.search(r.extra["label_note"]) else facts).append(r.extra["label_note"])
         if r.extra["handwritten"] == "yes":
             written = "handwritten" + (f": {r.extra['handwritten_fields']}" if r.extra["handwritten_fields"] else "")
             # handwriting in the bird ID or date needs a look (the feather IDs rest on them); elsewhere it is a note

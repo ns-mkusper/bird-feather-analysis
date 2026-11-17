@@ -33,6 +33,9 @@ def main() -> int:
     ap.add_argument("--complete", action="store_true", help="ask the model for what the saved readings lack")
     ap.add_argument("--slides", default=str(REPO / "data/raw_cache"))
     ap.add_argument("--workers", type=int, default=4)
+    ap.add_argument("--field-age-without-box-age", action="store_true",
+                    help="read field_age (the plumage age in the species row) only on slides with no secured box "
+                         "age (RC, empty box, covered); no other model questions")
     ap.add_argument("--only-problems", action="store_true",
                     help="with --complete: only slides with label problems under the current rules (plus --gold slides), "
                          "and no new fields (e.g. field_age) for the rest of the collection")
@@ -46,6 +49,33 @@ def main() -> int:
     if not results:
         sys.exit(f"no readings in {src / 'labels.jsonl'}")
     out.mkdir(parents=True)
+
+    if args.field_age_without_box_age:
+        import copy
+
+        from src import card_rules, slide_annotations
+        trial = {k: copy.deepcopy(r) for k, r in results.items()}
+        for r in trial.values():
+            lx.reclassify(r, cfg)
+            card_rules.apply(r, cfg)
+        slide_annotations.annotate(list(trial.values()), list(trial))
+        has_age = (lx.READABLE, card_rules.FROM_COLOUR, "inferred")
+        todo = [r for k, r in results.items() if "field_age" not in r.fields and not r.has_model_error
+                and (trial[k].fields.get("age") is None or trial[k].fields["age"].status not in has_age)]
+        print(f"--field-age-without-box-age: {len(todo)} slides")
+        client = lx.VLMClient(cfg["vlm"])
+
+        def read_field_age(r):
+            img = Path(args.slides) / r.file_id
+            if not img.exists():
+                return "no slide"
+            image = lx.Image.open(img)
+            image.load()
+            r.fields["field_age"] = lx.read_field(client, image, "field_age", cfg["fields"]["field_age"], cfg)
+            return r.fields["field_age"].status
+
+        with ThreadPoolExecutor(max_workers=max(1, args.workers)) as pool:
+            print({k: v for k, v in __import__("collections").Counter(pool.map(read_field_age, todo)).items()})
 
     if args.complete:
         client = lx.VLMClient(cfg["vlm"])

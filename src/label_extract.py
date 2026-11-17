@@ -1000,7 +1000,13 @@ def feather_table_rows(r: "LabelResult", run_id: str = "", node_id: str = "") ->
         if ok:   # the feather ID rests on the slide's bird ID and date: both must be read with confidence
             untrusted = [n for n in ID_FIELDS if (fr := r.fields.get(n)) is not None
                          and fr.status not in TRUSTED_ID_STATUSES]
-            if untrusted:
+            d = r.fields.get("date")
+            if d is not None and d.status == card_rules.CONFIRMED and r.extra.get("multiple_photos_same_year") \
+                    and "date" not in untrusted:
+                # the file name confirms only the year; with several slides of the bird that year the
+                # feather IDs carry the full date, which then has to be read
+                ok, why = False, "label: date only the year confirmed, and the bird has several slides that year"
+            elif untrusted:
                 ok, why = False, "label: " + ", ".join(f"{n} {r.fields[n].status.replace('_', ' ')}" for n in untrusted)
         for k in ("label_problems", "label_info", "label_note", "photos_same_year", "multiple_photos_same_year",
                   "handwritten", "handwritten_fields"):

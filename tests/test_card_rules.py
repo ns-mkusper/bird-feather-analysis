@@ -190,3 +190,27 @@ def test_a_covered_purple_box_may_be_rc_and_the_rules_can_run_again():
     r.extra["age_box"] = {"text": None, "colour": "purple", "state": "covered"}
     cr.apply(r, CFG)                                          # rules changed: back to the model's reading
     assert (r.fields["age"].value, r.fields["age"].status) == (None, "not_found")
+
+
+def test_a_year_confirmed_by_the_file_name_is_not_enough_with_several_slides_that_year():
+    a = _feather(_slide("BB17692 1998-im0513.jpg", date=("1998-06-21", "partly_visible")))
+    b = _slide("BB17692 1998-im0515.jpg")
+    cr.apply(a, CFG)
+    sa.annotate([a, b], ["BB17692 1998-im0513.jpg", "BB17692 1998-im0515.jpg"])
+    row = lx.feather_table_rows(a, "run")[0]
+    assert a.fields["date"].status == "confirmed_by_filename" and row["usable"] == "no"
+    assert "several slides that year" in row["excluded_because"]
+    alone = _feather(_slide("A1108 1999-im1255.jpg", date=("1999-06-22", "partly_visible")))
+    cr.apply(alone, CFG)
+    sa.annotate([alone], ["A1108 1999-im1255.jpg"])
+    assert lx.feather_table_rows(alone, "run")[0]["usable"] == "yes"
+
+
+def test_a_hand_correction_is_a_problem_and_other_notes_are_information():
+    r = _slide("BZ10121 2005-im2332.jpg")
+    r.extra["label_note"] = "printed bird ID A3839H crossed out by hand, no new ID written"
+    note = _slide("A0514 2000-im1163.jpg")
+    note.extra["label_note"] = "handwritten note in the date corner (red '1', 'VANO!')"
+    sa.annotate([r, note])
+    assert "crossed out by hand" in r.extra["label_problems"]
+    assert "VANO" in note.extra["label_info"] and not note.extra["label_problems"]
